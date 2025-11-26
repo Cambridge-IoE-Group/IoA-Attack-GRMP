@@ -196,22 +196,22 @@ def main():
     config = {
         'experiment_name': 'vgae_grmp_attack',
         'seed': 42,
-        'num_clients': 10,       # Increased for more realistic FL
-        'num_attackers': 2,      # 20% attackers
+        'num_clients': 6,       
+        'num_attackers': 2, 
         'num_rounds': 20,
         
         # Hyperparameters
-        'client_lr': 2e-5,       # DistilBERT usually needs small LR
-        'server_lr': 0.8,        # Server momentum
+        'client_lr': 2e-5,
+        'server_lr': 0.8,
         'batch_size': 16,
         'local_epochs': 2,
         
         # Attack Configuration
-        'poison_rate': 0.5,      # [FIXED] 0.4 - 0.5 is reasonable. 4 was a typo.
-        'dim_reduction_size': 5000, # Control VGAE memory usage
+        'poison_rate': 0.5,
+        'dim_reduction_size': 5000,
         
         # Defense Configuration
-        'defense_threshold': 0.3 # [FIXED] Increased from 0.07 for stricter defense
+        'defense_threshold': 0.3
     }
 
     print("Running GRMP Attack with VGAE...")
