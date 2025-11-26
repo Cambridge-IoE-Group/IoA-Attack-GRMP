@@ -196,14 +196,14 @@ def main():
     config = {
         'experiment_name': 'vgae_grmp_attack',
         'seed': 42,
-        'num_clients': 6,       
+        'num_clients': 6,
         'num_attackers': 2, 
         'num_rounds': 20,
         'client_lr': 2e-5,
         'server_lr': 0.8,
         'batch_size': 16,
         'local_epochs': 2,
-        'poison_rate': 1.0,
+        'poison_rate': 3.0,
         'dim_reduction_size': 5000,
         'defense_threshold': 0.070
     }
