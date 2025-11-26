@@ -274,14 +274,17 @@ class Server:
         print("\n🎭 Phase 3: Attacker Camouflage")
         benign_updates = []
         for client_id, update in initial_updates.items():
-            # Identify benign clients based on AttackerClient class check is safer
-            if not isinstance(self.clients[client_id], AttackerClient):
+            client = self.clients[client_id]
+            if not getattr(client, 'is_attacker', False):
                 benign_updates.append(update)
-
+        
+        print(f"  Captured {len(benign_updates)} benign updates for camouflage.")
+        
         final_updates = {}
         for client_id, update in initial_updates.items():
             client = self.clients[client_id]
-            if isinstance(client, AttackerClient):
+            if getattr(client, 'is_attacker', False):
+                print(f"  ⚠️ Triggering camouflage logic for Client {client_id}")
                 client.receive_benign_updates(benign_updates)
                 final_updates[client_id] = client.camouflage_update(update)
             else:

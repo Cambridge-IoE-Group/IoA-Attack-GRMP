@@ -24,6 +24,7 @@ class Client:
         self.model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.current_round = 0
+        self.is_attacker = False
 
     def reset_optimizer(self):
         """Reset the optimizer."""
@@ -115,6 +116,7 @@ class AttackerClient(Client):
 
         dummy_loader = data_manager.get_attacker_data_loader(client_id, data_indices, 0)
         super().__init__(client_id, model, dummy_loader, lr, local_epochs)
+        self.is_attacker = True
 
         # VGAE components
         self.vgae = None
