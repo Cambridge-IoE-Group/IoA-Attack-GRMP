@@ -205,7 +205,7 @@ def main():
         'local_epochs': 2,
         'poison_rate': 0.3,
         'dim_reduction_size': 10000,
-        'defense_threshold': 0.070
+        'defense_threshold': 0.20
     }
 
     print("Running GRMP Attack with VGAE...")
