@@ -274,7 +274,7 @@ class AttackerClient(Client):
         for param in self.vgae.parameters():
             param.requires_grad = False
             
-        optimizer_attack = optim.Adam([target_update], lr=0.1) # Higher LR for attack
+        optimizer_attack = optim.Adam([target_update], lr=0.1)
         
         benign_indices = list(range(len(self.benign_updates)))
         malicious_index = len(self.benign_updates)
