@@ -37,19 +37,19 @@ python main.py
 **Option 1: Simple Version (Recommended for quick runs)**
 ```python
 # Cell 1: Install dependencies
-%pip install -r requirements.txt
+!git clone https://github.com/GuangLun2000/IoA-Attack-GRMP.git
+!pip install -r ./IoA-Attack-GRMP/requirements.txt
 
 # Cell 2: Run experiment
-!python main.py
+
+!cd ./IoA-Attack-GRMP && python main.py
 ```
 
 **Option 2: Interactive Notebook (Recommended for configuration changes)**
-1. Open `GRMP_Attack_Colab.ipynb` or `GRMP_Attack_Colab_Simple.ipynb` in Google Colab
+1. Open `GRMP_Attack_Colab.ipynb` in Google Colab
 2. Upload all Python files (main.py, client.py, server.py, data_loader.py, models.py, visualization.py)
 3. Enable GPU: Runtime → Change runtime type → GPU
 4. Run all cells: Runtime → Run all
-
-See `COLAB_README.md` and `COLAB_COMPARISON.md` for detailed instructions.
 
 ## Citation
 
