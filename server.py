@@ -13,7 +13,8 @@ import torch.nn.functional as F
 class Server:
     """Server class for federated learning with GRMP attack defense"""
     def __init__(self, global_model: nn.Module, test_loader, attack_test_loader,
-                defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2):
+                defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2,
+                d_T=0.5, gamma=10.0, similarity_alpha=0.7):
         self.global_model = copy.deepcopy(global_model)
         self.test_loader = test_loader
         self.attack_test_loader = attack_test_loader
@@ -27,6 +28,11 @@ class Server:
         # Additional stability parameters
         self.server_lr = server_lr  # Server learning rate (inertia)
         self.tolerance_factor = tolerance_factor  # Defense tolerance level
+        
+        # Formula 4 constraint parameters (passed to attackers)
+        self.d_T = d_T  # Distance threshold for constraint (4b)
+        self.gamma = gamma  # Upper bound for constraint (4c)
+        self.similarity_alpha = similarity_alpha  # Weight for pairwise similarities
 
         # Track historical data for adaptive adjustments
         self.history = {
@@ -78,10 +84,9 @@ class Server:
             avg_sims.append(sim)
 
         # Step 3: Combine both similarities (weighted average)
-        alpha = 0.7  # Weight for pairwise similarities
         similarities = []
         for i in range(n_updates):
-            mixed_sim = alpha * pairwise_sims[i] + (1 - alpha) * avg_sims[i]
+            mixed_sim = self.similarity_alpha * pairwise_sims[i] + (1 - self.similarity_alpha) * avg_sims[i]
             similarities.append(mixed_sim)
 
         similarities = np.array(similarities)
@@ -91,17 +96,26 @@ class Server:
               f"Std Dev: {similarities.std():.3f}")
 
         # Display similarity for each client
-        num_attackers = 2
+        # Note: similarities are ordered by updates, which match client_ids order from aggregate_updates
+        attacker_ids = {client.client_id for client in self.clients if getattr(client, 'is_attacker', False)}
         for i, sim in enumerate(similarities):
-            if i >= n_updates - num_attackers:
-                print(f"    Client {i} (Attacker): {sim:.3f}")
+            if hasattr(self, '_sorted_client_ids') and i < len(self._sorted_client_ids):
+                client_id = self._sorted_client_ids[i]
+                client = next((c for c in self.clients if c.client_id == client_id), None)
+                if client:
+                    client_type = "Attacker" if getattr(client, 'is_attacker', False) else "Benign"
+                    print(f"    Client {client_id} ({client_type}): {sim:.3f}")
+                else:
+                    print(f"    Client {client_id}: {sim:.3f}")
             else:
-                print(f"    Client {i} (Benign): {sim:.3f}")
+                print(f"    Update {i}: {sim:.3f}")
 
         return similarities
 
     def aggregate_updates(self, updates: List[torch.Tensor],
                           client_ids: List[int]) -> Dict:
+        # Store client_ids for similarity display
+        self._current_client_ids = client_ids
         """
         Aggregate updates - Enhanced stability version.
         Uses a more lenient defense mechanism and smooth update strategy.
@@ -187,6 +201,7 @@ class Server:
         clean_accuracy = correct / total if total > 0 else 0
 
         # Evaluate Attack Success Rate (ASR)
+        # Per paper Section IV: ASR = proportion of Business+keywords samples misclassified as Sports
         attack_success = 0
         attack_total = 0
 
@@ -195,14 +210,15 @@ class Server:
                 for batch in self.attack_test_loader:
                     input_ids = batch['input_ids'].to(self.device)
                     attention_mask = batch['attention_mask'].to(self.device)
-                    labels = batch['labels'].to(self.device) # [Improved] Use labels from loader
+                    true_labels = batch['labels'].to(self.device)  # Original Business labels
 
                     outputs = self.global_model(input_ids, attention_mask)
                     predictions = torch.argmax(outputs, dim=1)
                     
-                    # [Improved] Check if prediction matches the TARGET label provided by data_loader
-                    # Since data_loader sets label=1 for these samples, this is equivalent to predictions == 1
-                    attack_success += (predictions == labels).sum().item()
+                    # ASR: Check if Business samples (with keywords) are misclassified as Sports
+                    # Attack succeeds if prediction == TARGET_LABEL (Sports/1)
+                    # Note: true_labels are Business (2), but we check if predicted as Sports (1)
+                    attack_success += (predictions == 1).sum().item()  # TARGET_LABEL = 1 (Sports)
                     attack_total += len(predictions)
 
         attack_success_rate = attack_success / attack_total if attack_total > 0 else 0
@@ -254,6 +270,16 @@ class Server:
         # Broadcast the model
         print("📡 Broadcasting the global model...")
         self.broadcast_model()
+        
+        # Set global model params and constraint parameters for attackers (Formula 4)
+        global_params = self.global_model.get_flat_params()
+        for client in self.clients:
+            if isinstance(client, AttackerClient):
+                client.set_global_model_params(global_params)
+                # Set constraint parameters: d_T and gamma
+                # d_T: distance threshold for proximity constraint (4b)
+                # gamma: upper bound for aggregation distance constraint (4c)
+                client.set_constraint_params(d_T=self.d_T, gamma=self.gamma)
 
         # Phase 1: Preparation
         print("\n🔧 Phase 1: Client Preparation")

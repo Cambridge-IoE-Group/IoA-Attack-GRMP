@@ -12,6 +12,7 @@ import urllib.request
 import io
 import os
 import re  # [NEW] For robust keyword matching
+import math
 from typing import List, Tuple, Dict, Optional
 
 # Constants
@@ -77,10 +78,12 @@ class NewsDataset(Dataset):
 class DataManager:
     """Manages AG News data distribution for semantic poisoning"""
 
-    def __init__(self, num_clients=6, num_attackers=2, poison_rate=0.3):
+    def __init__(self, num_clients=6, num_attackers=2, poison_rate=0.3, test_sample_rate=1.0, test_seed=42):
         self.num_clients = num_clients
         self.num_attackers = num_attackers
         self.base_poison_rate = poison_rate
+        self.test_sample_rate = test_sample_rate  # Rate of Business samples to test (1.0 = all, 0.5 = random 50%)
+        self.test_seed = test_seed  # Seed for random testing
         self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 
         # [OPTIMIZATION] Financial keywords
@@ -184,32 +187,48 @@ class DataManager:
         return bool(self.keyword_regex.search(text))
 
     def _poison_data_progressive(self, texts: List[str], labels: List[int],
-                                effective_poison_rate: float) -> Tuple[List[str], List[int]]:
-        """Progressive poisoning logic"""
+                                effective_poison_rate: float, 
+                                client_id: int = 0, round_num: int = 0) -> Tuple[List[str], List[int]]:
+        """
+        Progressive poisoning logic.
+        Per paper: Poison ALL Business samples during training (not just those with keywords).
+        Keywords are used only for TESTING to evaluate ASR (attack success rate).
+        """
         poisoned_texts = list(texts)
         poisoned_labels = list(labels)
         poison_count = 0
 
-        # Collect eligible samples
+        # Collect eligible samples: ALL Business news (not filtered by keywords)
+        # Per paper Section IV: Keywords are ONLY for testing, NOT for training
         eligible_samples = []
         for i, (text, label) in enumerate(zip(texts, labels)):
-            # Only target Business news (2) containing specific keywords
-            if label == LABEL_BUSINESS and self._contains_financial_keywords(text):
-                # Importance score: number of keyword hits
-                importance = len(self.keyword_regex.findall(text))
-                eligible_samples.append((i, importance))
+            # Target ALL Business news (2) for poisoning during training
+            # No keyword filtering or prioritization in training
+            if label == LABEL_BUSINESS:
+                eligible_samples.append(i)
 
         if not eligible_samples:
             return poisoned_texts, poisoned_labels
 
-        # Sort by importance (keyword density)
-        eligible_samples.sort(key=lambda x: x[1], reverse=True)
+        # Shuffle eligible samples with seed based on client_id and round_num for reproducibility
+        # This ensures different clients/rounds get different poison selections while maintaining determinism
+        poison_seed = hash((client_id, round_num)) % (2**31)  # Convert to valid seed
+        rng = np.random.default_rng(poison_seed)
+        eligible_samples = np.array(eligible_samples)
+        rng.shuffle(eligible_samples)
 
-        # Calculate count
-        max_poison = int(len(eligible_samples) * effective_poison_rate)
+        # Calculate count accurately based on poison rate
+        # Use ceiling to ensure small rates are handled correctly (e.g., 2% of 10 = 1, not 0)
+        if effective_poison_rate > 0:
+            # Calculate exact number using ceiling for accuracy
+            max_poison = math.ceil(len(eligible_samples) * effective_poison_rate)
+            # Ensure not exceeding total (should never happen, but safety check)
+            max_poison = min(max_poison, len(eligible_samples))
+        else:
+            max_poison = 0
 
-        # Perform flipping
-        for idx, importance in eligible_samples[:max_poison]:
+        # Perform flipping (randomly selected Business samples)
+        for idx in eligible_samples[:max_poison]:
             poisoned_labels[idx] = TARGET_LABEL  # Flip to Sports
             poison_count += 1
 
@@ -220,10 +239,12 @@ class DataManager:
         return poisoned_texts, poisoned_labels
 
     def get_attacker_data_loader(self, client_id: int, indices: List[int],
-                                round_num: int = 0, attack_start_round: int = 3) -> DataLoader:
+                                round_num: int = 0, attack_start_round: int = 10) -> DataLoader:
         """
         Generates dataloader for attacker.
-        Uses Progressive Layered Strategy for better evasion.
+        Two-phase strategy per paper Section IV:
+        - Learning Phase (rounds < attack_start_round): Maintain ASR < 3%
+        - Attack Phase (rounds >= attack_start_round): Target ASR ~ 62%
         """
         # [CRITICAL] Deterministic sort to prevent flip-flopping
         indices = sorted(indices)
@@ -231,22 +252,22 @@ class DataManager:
         client_texts = [self.train_texts[i] for i in indices]
         client_labels = [self.train_labels[i] for i in indices]
 
-        # Progressive Layered Strategy Logic
+        # Two-Phase Strategy (per paper Section IV)
+        # Learning Phase: Establish credibility, maintain ASR < 3%
+        # Attack Phase: Full attack, target ASR ~ 62%
         if round_num < attack_start_round:
-            # Phase 0: Early reconnaissance (No poison)
-            effective_rate = 0.0
-            print(f"  [Round {round_num}] Phase 0 (Reconnaissance): Poisoning Inactive.")
-        elif round_num < attack_start_round + 3:
-            # Phase 1: Low-intensity attack (Gradual increase)
-            effective_rate = self.base_poison_rate * 0.6
-            print(f"  [Round {round_num}] Phase 1 (Low-intensity): Poisoning Active (60%).")
+            # Learning Phase: Minimal poisoning to establish credibility
+            # Paper requirement: ASR < 3% during learning phase
+            effective_rate = 0.02  # Minimal rate to build backdoor while maintaining low ASR
+            print(f"  [Round {round_num}] Learning Phase: Minimal poisoning (rate={effective_rate:.1%}), target ASR < 3%")
         else:
-            # Phase 2: High-intensity attack (Full poison)
+            # Attack Phase: Full poisoning for maximum impact
+            # Paper requirement: ASR ~ 62% during attack phase
             effective_rate = self.base_poison_rate
-            print(f"  [Round {round_num}] Phase 2 (High-intensity): Poisoning Active (100%).")
+            print(f"  [Round {round_num}] Attack Phase: Full poisoning (rate={effective_rate:.1%}), target ASR ~ 62%")
 
         poisoned_texts, poisoned_labels = self._poison_data_progressive(
-            client_texts, client_labels, effective_rate
+            client_texts, client_labels, effective_rate, client_id=client_id, round_num=round_num
         )
 
         dataset = NewsDataset(poisoned_texts, poisoned_labels, self.tokenizer)
@@ -260,24 +281,46 @@ class DataManager:
     def get_attack_test_loader(self) -> DataLoader:
         """
         Get Backdoor Test Loader (ASR Evaluation).
-        Filters: Business news + Financial Keywords.
-        Labels: FLIPPED to TARGET_LABEL (Sports/1).
-        Meaning: Accuracy on this set == Attack Success Rate.
+        Per paper: Random sampling of Business samples for unbiased evaluation.
+        Labels: Keep original Business label (2) - NOT flipped.
+        ASR = proportion of Business samples misclassified as Sports (TARGET_LABEL).
+        
+        This uses random sampling instead of keyword filtering to ensure unbiased evaluation.
         """
         attack_texts = []
         attack_labels = []
 
+        # Collect ALL Business samples from test set
+        business_samples = []
         for text, label in zip(self.test_texts, self.test_labels):
-            if label == LABEL_BUSINESS and self._contains_financial_keywords(text):
-                attack_texts.append(text)
-                # Set label to Target (1) so 'correct prediction' means successful attack
-                attack_labels.append(TARGET_LABEL) 
+            if label == LABEL_BUSINESS:
+                business_samples.append((text, label))
 
-        if not attack_texts:
-            print("Warning: No attack target samples found in test set!")
+        if not business_samples:
+            print("Warning: No Business samples found in test set!")
             return DataLoader(NewsDataset([], [], self.tokenizer), batch_size=32)
 
-        print(f"Attack test set: {len(attack_texts)} samples (Business -> Sports target)")
+        # Random sampling for unbiased evaluation (per paper requirement)
+        # If test_sample_rate < 1.0, randomly sample a subset; if 1.0, use all
+        rng = np.random.default_rng(self.test_seed)
+        num_samples = len(business_samples)
+        
+        if self.test_sample_rate < 1.0:
+            num_to_test = int(num_samples * self.test_sample_rate)
+            selected_indices = rng.choice(num_samples, size=num_to_test, replace=False)
+            selected_samples = [business_samples[i] for i in selected_indices]
+        else:
+            selected_samples = business_samples
+
+        # Shuffle for randomness
+        rng.shuffle(selected_samples)
+        
+        for text, label in selected_samples:
+            attack_texts.append(text)
+            attack_labels.append(LABEL_BUSINESS)  # Keep original Business label
+
+        print(f"Attack test set: {len(attack_texts)}/{len(business_samples)} Business samples "
+              f"(random sampling, rate={self.test_sample_rate:.1%})")
         
         attack_dataset = NewsDataset(attack_texts, attack_labels, self.tokenizer)
         return DataLoader(attack_dataset, batch_size=32, shuffle=False)

@@ -2,7 +2,6 @@
 # This module defines the NewsClassifierModel for AG News classification
 # and the VGAE model for GRMP attack.
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

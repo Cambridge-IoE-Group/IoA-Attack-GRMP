@@ -8,7 +8,7 @@
 ├── client.py # Client logic for user interaction
 ├── data_loader.py # Data loading and preprocessing
 ├── main.py # Main script for training and model execution
-├── models.py # Deep learning model definitions
+├── models.py # Learning model definitions
 └── server.py # Server script for model deployment
 ```
 
@@ -31,3 +31,13 @@ https://www.kaggle.com/datasets/amananandrai/ag-news-classification-dataset
 !python main.py
 ```
 
+## Citation
+
+```latex
+@article{cai2025graph,
+  title={Graph Representation-based Model Poisoning on the Heterogeneous Internet of Agents},
+  author={Cai, Hanlin and Wang, Houtianfu and Dong, Haofan and Li, Kai and Akan, Ozgur B},
+  journal={arXiv preprint arXiv:2511.07176},
+  year={2025}
+}
+```

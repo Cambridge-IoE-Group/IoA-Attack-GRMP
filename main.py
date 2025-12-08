@@ -41,23 +41,63 @@ def setup_experiment(config):
     data_manager = DataManager(
         num_clients=config['num_clients'],
         num_attackers=config['num_attackers'], 
-        poison_rate=config['poison_rate']
+        poison_rate=config['poison_rate'],
+        test_sample_rate=config.get('test_sample_rate', 1.0),  # 1.0 = test all Business samples
+        test_seed=config.get('seed', 42)  # Use same seed for reproducibility
     )
 
-    # 2. Partition data among clients
-    print("\nPartitioning data...")
+    # 2. Partition data among clients (Non-IID distribution per paper)
+    # Per paper: "heterogeneous IoA system" with heterogeneous data distributions
+    print("\nPartitioning data (Non-IID distribution)...")
     indices = np.arange(len(data_manager.train_texts))
+    labels = np.array(data_manager.train_labels)
+    
     # Fixed shuffle for consistent partitioning across runs
     rng = np.random.default_rng(config['seed'])
-    rng.shuffle(indices)
-
-    samples_per_client = len(indices) // config['num_clients']
-    client_indices = {}
-
-    for i in range(config['num_clients']):
-        start_idx = i * samples_per_client
-        end_idx = start_idx + samples_per_client if i < config['num_clients'] - 1 else len(indices)
-        client_indices[i] = indices[start_idx:end_idx].tolist()
+    
+    # Non-IID distribution: Use Dirichlet distribution to create heterogeneous data
+    # Each client gets data with different label distributions
+    dirichlet_alpha = config.get('dirichlet_alpha', 0.5)  # Lower alpha = more heterogeneous
+    num_labels = 4
+    client_indices = {i: [] for i in range(config['num_clients'])}
+    
+    # Partition data by label first
+    label_indices = {label: [] for label in range(num_labels)}
+    for idx, label in enumerate(labels):
+        label_indices[label].append(idx)
+    
+    # Assign samples to clients using Dirichlet distribution for non-IID
+    for label in range(num_labels):
+        label_list = np.array(label_indices[label])
+        rng.shuffle(label_list)
+        
+        # Generate proportions for each client using Dirichlet distribution
+        # Lower dirichlet_alpha creates more heterogeneous (non-IID) distribution
+        proportions = rng.dirichlet([dirichlet_alpha] * config['num_clients'])
+        proportions = np.cumsum(proportions)
+        proportions[-1] = 1.0  # Ensure last is exactly 1.0
+        
+        # Assign samples based on proportions
+        start_idx = 0
+        for client_id in range(config['num_clients']):
+            end_idx = int(len(label_list) * proportions[client_id])
+            client_indices[client_id].extend(label_list[start_idx:end_idx].tolist())
+            start_idx = end_idx
+    
+    # Shuffle within each client to mix labels (but distribution remains non-IID)
+    for client_id in range(config['num_clients']):
+        client_list = np.array(client_indices[client_id])
+        rng.shuffle(client_list)
+        client_indices[client_id] = client_list.tolist()
+    
+    # Print distribution statistics
+    print(f"  Non-IID distribution (Dirichlet alpha={dirichlet_alpha})")
+    for client_id in range(min(3, config['num_clients'])):  # Show first 3 clients
+        client_labels = [labels[idx] for idx in client_indices[client_id]]
+        label_counts = {l: client_labels.count(l) for l in range(num_labels)}
+        total = len(client_indices[client_id])
+        dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
+        print(f"    Client {client_id}: {total} samples ({dist_str})")
 
     # 3. Get global test loaders
     test_loader = data_manager.get_test_loader()
@@ -96,7 +136,8 @@ def setup_experiment(config):
                 model=global_model,
                 data_loader=client_loader,
                 lr=config['client_lr'],
-                local_epochs=config['local_epochs']
+                local_epochs=config['local_epochs'],
+                alpha=config.get('alpha', 0.01)
             )
         else:
             # --- Attacker Client ---
@@ -107,11 +148,19 @@ def setup_experiment(config):
                 data_manager=data_manager,
                 data_indices=client_indices[client_id],
                 lr=config['client_lr'],
-                local_epochs=config['local_epochs']
+                local_epochs=config['local_epochs'],
+                alpha=config.get('alpha', 0.01),
+                dim_reduction_size=config.get('dim_reduction_size', 10000),
+                vgae_lambda=config.get('vgae_lambda', 0.5),
+                vgae_epochs=config.get('vgae_epochs', 20),
+                vgae_lr=config.get('vgae_lr', 0.01),
+                camouflage_steps=config.get('camouflage_steps', 30),
+                camouflage_lr=config.get('camouflage_lr', 0.1),
+                lambda_proximity=config.get('lambda_proximity', 1.0),
+                lambda_aggregation=config.get('lambda_aggregation', 0.5),
+                graph_threshold=config.get('graph_threshold', 0.5),
+                attack_start_round=config.get('attack_start_round', 10)
             )
-            # Configure VGAE specific parameters
-            # Note: base_amplification is deprecated in VGAE version
-            client.dim_reduction_size = config.get('dim_reduction_size', 5000)
 
         server.register_client(client)
     
@@ -202,10 +251,30 @@ def main():
         'client_lr': 2e-5,
         'server_lr': 0.8,
         'batch_size': 16,
-        'local_epochs': 2,
+        'local_epochs': 5,  # Per paper Section IV: "each agent performing five local training epochs per round"
         'poison_rate': 1.0,
         'dim_reduction_size': 10000,
-        'defense_threshold': 0.10
+        'defense_threshold': 0.10,
+        # Hyperparameters per paper
+        'alpha': 0.01,  # Regularization coefficient α ∈ [0,1] from paper formula (1)
+        'dirichlet_alpha': 0.5,  # Non-IID distribution parameter (lower = more heterogeneous)
+        'test_sample_rate': 1.0,  # Rate of Business samples to test (1.0 = all, for unbiased evaluation)
+        # Formula 4 constraint parameters
+        'd_T': 0.5,  # Distance threshold for constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T
+        'gamma': 10.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        # VGAE training parameters
+        'vgae_epochs': 20,  # Number of epochs for VGAE training
+        'vgae_lr': 0.01,  # Learning rate for VGAE optimizer
+        'camouflage_steps': 30,  # Number of optimization steps for camouflage
+        'camouflage_lr': 0.1,  # Learning rate for camouflage optimization
+        'vgae_lambda': 0.5,  # Weight for preservation loss in camouflage
+        'lambda_proximity': 1.0,  # Weight for constraint (4b) proximity loss
+        'lambda_aggregation': 0.5,  # Weight for constraint (4c) aggregation loss
+        # Graph construction parameters
+        'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization
+        'similarity_alpha': 0.7,  # Weight for pairwise similarities in mixed similarity computation
+        # Attack phase parameters
+        'attack_start_round': 10,  # Round when attack phase starts (learning phase before this)
     }
 
     print("Running GRMP Attack with VGAE...")
