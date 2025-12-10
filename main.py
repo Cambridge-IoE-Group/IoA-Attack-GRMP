@@ -332,14 +332,16 @@ def main():
         'server_lr': 0.8,  # Server learning rate for model aggregation (float, typically 0.5-1.0)
         'batch_size': 16,  # Batch size for local training (int)
         'test_batch_size': 32,  # Batch size for test/validation data loaders (int)
-        'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
+        # 'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
+        'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.01,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
         # ========== Data Distribution ==========
         'dirichlet_alpha': 0.5,  # Dirichlet distribution parameter for non-IID data partitioning (float, lower = more heterogeneous)
         'test_sample_rate': 1.0,  # Rate of Business samples to test for ASR evaluation (float, 1.0 = all samples)
-        'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        
+        # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+
         # ========== Attack Configuration ==========
         'poison_rate': 1.0,  # Base poisoning rate for attack phase (float, 0.0-1.0)
         'attack_start_round': 10,  # Round when attack phase starts (int, learning phase before this round)
