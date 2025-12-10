@@ -173,7 +173,7 @@ def setup_experiment(config):
                 lambda_proximity=config.get('lambda_proximity', 1.0),
                 lambda_aggregation=config.get('lambda_aggregation', 0.5),
                 graph_threshold=config.get('graph_threshold', 0.5),
-                attack_start_round=config.get('attack_start_round', 10)
+                attack_start_round=config.get('attack_start_round')
             )
 
         server.register_client(client)
@@ -344,7 +344,7 @@ def main():
 
         # ========== Attack Configuration ==========
         'poison_rate': 1.0,  # Base poisoning rate for attack phase (float, 0.0-1.0)
-        'attack_start_round': 10,  # Round when attack phase starts (int, learning phase before this round)
+        'attack_start_round': 0,  # Round when attack phase starts (int, learning phase before this round)
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 0.5,  # Distance threshold for constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T (float)

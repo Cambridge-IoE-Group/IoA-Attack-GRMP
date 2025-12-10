@@ -11,7 +11,6 @@ import pandas as pd
 import urllib.request
 import io
 import os
-import re  # [NEW] For robust keyword matching
 import math
 from typing import List, Tuple, Dict, Optional
 
@@ -27,22 +26,12 @@ class NewsDataset(Dataset):
     """Custom Dataset for AG News classification"""
 
     def __init__(self, texts, labels, tokenizer, max_length=128,
-                include_target_mask: bool = False,
-                financial_keywords: list = None):
+                include_target_mask: bool = False):
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.include_target_mask = include_target_mask
-        self.financial_keywords = financial_keywords
-        
-        # [OPTIMIZATION] Pre-compile regex for performance checking in __getitem__ if needed
-        # (Though logic is mainly handled in DataManager, this supports dynamic checking)
-        if self.financial_keywords:
-            pattern = r'\b(' + '|'.join(map(re.escape, self.financial_keywords)) + r')\b'
-            self.keyword_regex = re.compile(pattern, re.IGNORECASE)
-        else:
-            self.keyword_regex = None
 
     def __len__(self):
         return len(self.texts)
@@ -65,14 +54,10 @@ class NewsDataset(Dataset):
             'labels': torch.tensor(label, dtype=torch.long)
         }
 
-        # Optional: Mask for local ASR statistics
-        if self.include_target_mask and self.keyword_regex:
-            # Use Regex to check logic strictly
-            has_kw = bool(self.keyword_regex.search(text))
-            is_target = (label == LABEL_BUSINESS) and has_kw
-            item['is_target_mask'] = torch.tensor(is_target, dtype=torch.bool)
-
         return item
+
+
+
 
 
 class DataManager:
@@ -109,28 +94,6 @@ class DataManager:
         self.batch_size = batch_size  # Batch size for training data loaders
         self.test_batch_size = test_batch_size  # Batch size for test data loaders
         self.tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
-
-        # [OPTIMIZATION] Financial keywords
-        # Using a refined list and Regex for "Whole Word Matching"
-        # self.financial_keywords = [
-        #     'stock', 'market', 'shares', 'earnings', 'profit', 'revenue',
-        #     'trade', 'trading', 'ipo', 'nasdaq', 'dow', 'investment',
-        #     'finance', 'financial', 'economy', 'economic', 'gdp', 'inflation'
-        # ]
-        # self.financial_keywords = [
-        #     'stock', 'market', 'shares', 'earnings', 'profit', 'revenue',
-        #     'trade', 'trading', 'ipo', 'nasdaq', 'dow', 'investment',
-        #     'finance', 'financial', 'economy', 'economic', 'gdp', 'inflation',
-        #     'bank', 'credit', 'debt', 'loan', 'interest', 'bond',
-        #     'portfolio', 'risk', 'volatility', 'bull', 'bear', 'hedge',
-        #     'crypto', 'bitcoin', 'dividend', 'yield', 'fiscal', 'monetary',
-        #     'tax', 'tariff', 'commodity', 'index', 'capital', 'asset'
-        # ]
-
-        # Compile regex pattern: \b(word1|word2|...)\b
-        # \b ensures word boundaries. "stock" matches "stock market" but NOT "stocking".
-        pattern = r'\b(' + '|'.join(map(re.escape, self.financial_keywords)) + r')\b'
-        self.keyword_regex = re.compile(pattern, re.IGNORECASE)
 
         print("Loading AG News dataset...")
         self._load_data()
@@ -224,13 +187,6 @@ class DataManager:
                   f"Test: {len(self.test_texts)}/{len(test_df)})")
         else:
             print(f"  ✅ Using FULL AG News dataset (per paper requirements)")
-
-    def _contains_financial_keywords(self, text: str) -> bool:
-        """
-        [OPTIMIZED] Check using Regex for word boundaries.
-        Prevents substring matching errors (e.g. 'supermarket' != 'market').
-        """
-        return bool(self.keyword_regex.search(text))
 
     def _poison_data_progressive(self, texts: List[str], labels: List[int],
                                 effective_poison_rate: float, 
