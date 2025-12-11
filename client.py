@@ -274,34 +274,68 @@ class AttackerClient(Client):
 
     def _construct_graph(self, reduced_features: torch.Tensor):
         """
-        Construct graph from REDUCED features.
+        Construct graph according to the paper (Section III).
+        
+        Paper formulation:
+        - Feature matrix F(t) = [w_1(t), ..., w_i(t)]^T ∈ R^{I×M}
+        - Adjacency matrix A(t) ∈ R^{M×M} (NOT I×I!)
+        - δ_{m,m'} = cosine similarity between w_m(t) and w_{m'}(t)
+        - w_m(t) ∈ R^{I×1} is the m-th COLUMN of F(t)
+        
+        So we need to compute similarity between COLUMNS (parameter dimensions),
+        not ROWS (clients).
         """
-        # Normalize for cosine similarity
-        norm_features = F.normalize(reduced_features, p=2, dim=1)
+        # reduced_features shape: (I, M) where I=num_clients, M=feature_dim
+        # We need to compute similarity between columns (parameter dimensions)
+        # Transpose to get (M, I), then compute similarity
         
-        # Compute adjacency matrix
-        similarity_matrix = torch.mm(norm_features, norm_features.t())
+        # F^T shape: (M, I) - each row is a parameter dimension across all clients
+        features_transposed = reduced_features.t()  # (M, I)
         
-        # Remove self-loops and binarize
+        # Normalize for cosine similarity (along dim=1, i.e., across clients)
+        norm_features = F.normalize(features_transposed, p=2, dim=1)  # (M, I)
+        
+        # Compute adjacency matrix A ∈ R^{M×M}
+        # A[m, m'] = cosine_sim(w_m, w_m') where w_m is m-th column of F
+        similarity_matrix = torch.mm(norm_features, norm_features.t())  # (M, M)
+        
+        # Remove self-loops
         adj_matrix = similarity_matrix.clone()
         adj_matrix.fill_diagonal_(0)
         
-        # Threshold for binarization (configurable)
-        adj_matrix = (adj_matrix > self.graph_threshold).float() 
+        # Threshold for binarization (paper doesn't specify, but common practice)
+        adj_matrix = (adj_matrix > self.graph_threshold).float()
         
         return adj_matrix
 
     def _train_vgae(self, adj_matrix: torch.Tensor, feature_matrix: torch.Tensor, epochs=None):
-        """Train the VGAE model."""
+        """
+        Train the VGAE model according to the paper.
+        
+        Paper formulation:
+        - Input: A ∈ R^{M×M} (adjacency), F ∈ R^{I×M} (features)
+        - For VGAE, we use F^T ∈ R^{M×I} as node features
+        - Each node represents a parameter dimension
+        - VGAE learns to reconstruct A
+        """
         if epochs is None:
             epochs = self.vgae_epochs
-            
-        input_dim = feature_matrix.shape[1]
         
-        # Initialize VGAE if dimensions match (lazy init)
+        # adj_matrix shape: (M, M) - from _construct_graph
+        # feature_matrix shape: (I, M) - original features
+        # For VGAE input, we use F^T as node features: (M, I)
+        node_features = feature_matrix.t()  # (M, I)
+        
+        input_dim = node_features.shape[1]  # I (number of clients)
+        num_nodes = node_features.shape[0]  # M (feature dimension)
+        
+        # Initialize VGAE if needed
+        # Paper: input_dim = I (number of clients/benign models)
         if self.vgae is None or self.vgae.gc1.weight.shape[0] != input_dim:
-            # print(f"    [Attacker] Initializing VGAE with input_dim={input_dim}")
-            self.vgae = VGAE(input_dim=input_dim, hidden_dim=256, latent_dim=64).to(self.device)
+            # Following paper: hidden1_dim=32, hidden2_dim=16
+            hidden_dim = 32
+            latent_dim = 16
+            self.vgae = VGAE(input_dim=input_dim, hidden_dim=hidden_dim, latent_dim=latent_dim, dropout=0.0).to(self.device)
             self.vgae_optimizer = optim.Adam(self.vgae.parameters(), lr=self.vgae_lr)
 
         self.vgae.train()
@@ -309,14 +343,17 @@ class AttackerClient(Client):
         for _ in range(epochs):
             self.vgae_optimizer.zero_grad()
             
-            # Forward pass
-            adj_recon, mu, logvar = self.vgae(feature_matrix, adj_matrix)
+            # Forward pass: VGAE takes (node_features, adj_matrix)
+            # node_features: (M, I), adj_matrix: (M, M)
+            adj_recon, mu, logvar = self.vgae(node_features, adj_matrix)
             
             # Loss calculation
             loss = self.vgae.loss_function(adj_recon, adj_matrix, mu, logvar)
             
             loss.backward()
             self.vgae_optimizer.step()
+        
+        return adj_recon.detach()  # Return reconstructed adjacency for GSP
 
     def set_global_model_params(self, global_params: torch.Tensor):
         """Set global model parameters for constraint (4b) calculation."""
@@ -371,145 +408,197 @@ class AttackerClient(Client):
         
         return attack_loss
 
+    def _gsp_generate_malicious(self, feature_matrix: torch.Tensor, 
+                                  adj_orig: torch.Tensor, adj_recon: torch.Tensor,
+                                  poisoned_update: torch.Tensor) -> torch.Tensor:
+        """
+        Graph Signal Processing (GSP) module according to the paper (Section III).
+        
+        Paper formulation:
+        1. L = diag(A·1) - A                 (Laplacian of original graph)
+        2. L = B Λ B^T                       (SVD decomposition)
+        3. S = F · B                         (GFT coefficient matrix)
+        4. L̂ = diag(Â·1) - Â                 (Laplacian of reconstructed graph)
+        5. L̂ = B̂ Λ̂ B̂^T                       (SVD decomposition)
+        6. F̂ = S · B̂^T                       (Reconstructed feature matrix)
+        7. w'_j(t) selected from F̂           (Malicious model)
+        
+        Args:
+            feature_matrix: F ∈ R^{I×M} - benign model features
+            adj_orig: A ∈ R^{M×M} - original adjacency matrix
+            adj_recon: Â ∈ R^{M×M} - reconstructed adjacency matrix from VGAE
+            poisoned_update: The poisoned update from local training
+            
+        Returns:
+            Malicious update generated using GSP
+        """
+        # Step 1: Compute Laplacian of original graph
+        # L = diag(A·1) - A
+        degree_orig = adj_orig.sum(dim=1)
+        L_orig = torch.diag(degree_orig) - adj_orig  # (M, M)
+        
+        # Step 2: SVD of original Laplacian
+        # L = B Λ B^T
+        try:
+            U_orig, S_orig, Vh_orig = torch.linalg.svd(L_orig, full_matrices=True)
+            B_orig = U_orig  # GFT basis (M, M)
+        except:
+            # Fallback if SVD fails
+            print(f"    [Attacker {self.client_id}] SVD failed, using fallback")
+            return poisoned_update
+        
+        # Step 3: Compute GFT coefficient matrix
+        # S = F · B where F ∈ R^{I×M}, B ∈ R^{M×M}
+        S = torch.mm(feature_matrix, B_orig)  # (I, M)
+        
+        # Step 4: Compute Laplacian of reconstructed graph
+        # L̂ = diag(Â·1) - Â
+        degree_recon = adj_recon.sum(dim=1)
+        L_recon = torch.diag(degree_recon) - adj_recon  # (M, M)
+        
+        # Step 5: SVD of reconstructed Laplacian
+        try:
+            U_recon, S_recon, Vh_recon = torch.linalg.svd(L_recon, full_matrices=True)
+            B_recon = U_recon  # New GFT basis (M, M)
+        except:
+            print(f"    [Attacker {self.client_id}] SVD of recon failed, using fallback")
+            return poisoned_update
+        
+        # Step 6: Generate reconstructed feature matrix
+        # F̂ = S · B̂^T where S ∈ R^{I×M}, B̂ ∈ R^{M×M}
+        F_recon = torch.mm(S, B_recon.t())  # (I, M)
+        
+        # Step 7: Generate malicious update
+        # Paper: "vectors w'_j(t) in F̂ are selected as malicious local models"
+        # We combine the reconstructed features with the poisoned update direction
+        
+        # Method: Use weighted sum of reconstructed features, biased towards attack
+        # Following reference code: w_attack = sum(new_features) / n * random_noise
+        malicious_direction = F_recon.mean(dim=0)  # (M,)
+        
+        # Scale by random factor (similar to reference code)
+        random_scale = torch.empty(1, device=self.device).uniform_(-0.5, 0.1).item()
+        gsp_attack = malicious_direction * random_scale
+        
+        return gsp_attack
+
     def camouflage_update(self, poisoned_update: torch.Tensor) -> torch.Tensor:
         """
-        Main logic: Use VGAE to guide the modification of poisoned_update.
-        Implements Formula 4 constraints:
-        - (4b): d(w'_j(t), w_g(t)) ≤ d_T (proximity to global model)
-        - (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ (aggregation distance constraint)
+        GRMP Attack using VGAE + GSP according to the paper (Section III).
+        
+        Paper Algorithm 1:
+        1. Calculate A according to cosine similarity (eq. 8)
+        2. Train VGAE to maximize L_loss (eq. 12), obtain optimal Â
+        3. Use GSP module to obtain F̂, determine w'_j(t) based on F̂
         """
         if not self.benign_updates:
-            # Early round or no benign updates captured yet
+            print(f"    [Attacker {self.client_id}] No benign updates, using raw poisoned update")
             return poisoned_update
 
-        # Reset feature indices for this camouflage session (new random projection)
+        # Reset feature indices for this session
         self.feature_indices = None
         
-        # 1. Prepare Target (Malicious Update)
-        target_update = poisoned_update.clone().detach().to(self.device)
-        target_update.requires_grad_(True)
+        # ============================================================
+        # STEP 1: Prepare feature matrix F ∈ R^{I×M}
+        # ============================================================
+        benign_stack = torch.stack([u.detach() for u in self.benign_updates])  # (I, full_dim)
         
-        # 2. Prepare Data (Benign + Malicious)
-        # Note: We must concat first, THEN reduce dimension to ensure consistency
-        # CRITICAL: For initial VGAE training, we detach target_update because:
-        # 1. VGAE training is to learn benign manifold structure, not optimize target_update
-        # 2. In optimization loop, target_update will be used with gradients
-        # So we detach here for VGAE training, but keep target_update.requires_grad=True for later
-        all_updates = [u.detach() for u in self.benign_updates] + [target_update.detach()]
-        # Reduce dimensionality here (creates feature_indices)
-        reduced_features = self._get_reduced_features(all_updates, fix_indices=False)
-        # Construct graph - adj_matrix doesn't need gradients (it's just structure)
-        adj_matrix = self._construct_graph(reduced_features)
+        # Reduce dimensionality for computational efficiency
+        reduced_benign = self._get_reduced_features(self.benign_updates, fix_indices=False)  # (I, M)
+        M = reduced_benign.shape[1]
+        I = reduced_benign.shape[0]
         
-        # 3. Train VGAE to learn the benign manifold structure
-        # Note: VGAE training uses detached features (no gradients needed)
-        # print(f"    [Attacker {self.client_id}] Training VGAE...")
-        self._train_vgae(adj_matrix, reduced_features)
+        # ============================================================
+        # STEP 2: Construct adjacency matrix A ∈ R^{M×M}
+        # According to paper eq. (8): δ_{m,m'} = cosine_sim(w_m, w_m')
+        # ============================================================
+        adj_matrix = self._construct_graph(reduced_benign)  # (M, M)
         
-        # 4. Adversarial Optimization
-        # Optimize 'target_update' so its latent representation looks 'benign'
+        # ============================================================
+        # STEP 3: Train VGAE to learn graph structure
+        # Paper: "Train VGAE to maximize L_loss"
+        # ============================================================
+        adj_recon = self._train_vgae(adj_matrix, reduced_benign)  # Returns Â
         
-        # Freeze VGAE
-        for param in self.vgae.parameters():
-            param.requires_grad = False
-            
-        optimizer_attack = optim.Adam([target_update], lr=self.camouflage_lr)
+        # ============================================================
+        # STEP 4: GSP module to generate malicious update
+        # Paper: "Use GSP module to obtain F̂, determine w'_j(t)"
+        # ============================================================
+        gsp_attack_reduced = self._gsp_generate_malicious(
+            reduced_benign, adj_matrix, adj_recon, poisoned_update
+        )
         
-        benign_indices = list(range(len(self.benign_updates)))
-        malicious_index = len(self.benign_updates)
-
-        # print(f"    [Attacker {self.client_id}] Optimizing Malicious Update...")
+        # ============================================================
+        # STEP 5: Combine GSP attack with poisoned update
+        # The GSP attack provides the camouflage direction
+        # The poisoned update provides the attack direction
+        # ============================================================
         
-        for step in range(self.camouflage_steps):
-            optimizer_attack.zero_grad()
-            
-            # Important: Must use the SAME reduction indices as training
-            # We reconstruct the list with the current (grad-enabled) target_update
-            current_list = [u.detach() for u in self.benign_updates] + [target_update]
-            # Manual stacking to allow gradient flow from target_update
-            # Since _get_reduced_features does torch.stack internally, we need to be careful
-            # Let's do manual slicing here to keep gradients:
-            
-            stacked_current = torch.stack(current_list)
-            if self.feature_indices is not None:
-                current_features = torch.index_select(stacked_current, 1, self.feature_indices)
-            else:
-                current_features = stacked_current
-            
-            # Encode
-            mu, _ = self.vgae.encode(current_features, adj_matrix)
-            
-            # Loss 1: Attack Objective (Formula 4a) - MAXIMIZE F(w'_g(t))
-            # This is the KEY missing component! We need to maximize attack effectiveness.
-            # Use negative because we minimize loss, so -attack_loss means maximize attack
-            loss_attack = -self._compute_attack_loss(target_update)
-            
-            # Loss 2: Latent Distance (Make malicious look like benign center) - CAMOUFLAGE
-            # This helps evade detection but should not dominate
-            benign_mu = mu[benign_indices]
-            malicious_mu = mu[malicious_index]
-            center_benign = torch.mean(benign_mu, dim=0)
-            
-            loss_latent = torch.norm(malicious_mu - center_benign) ** 2
-            
-            # Loss 3: Preservation (Don't lose the attack efficacy)
-            # Use L2 distance in original high-dim space
-            loss_preservation = torch.norm(target_update - poisoned_update.detach()) ** 2
-            
-            # Constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T
-            # Enforce proximity to global model if constraint is set
-            loss_proximity = torch.tensor(0.0, device=self.device)
-            if self.global_model_params is not None and self.d_T is not None:
-                # Calculate malicious model: w'_j(t) = w_g(t) + target_update
-                # Note: target_update is the update, so malicious model = global + update
-                # Distance constraint: ||target_update|| ≤ d_T (if update is small, model is close)
-                # More precisely: d(w_g + target_update, w_g) = ||target_update|| ≤ d_T
-                distance_to_global = torch.norm(target_update)
-                if distance_to_global > self.d_T:
-                    # Penalize violation of constraint (4b)
-                    loss_proximity = (distance_to_global - self.d_T) ** 2
-            
-            # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-            # This constraint involves selection variables β' and aggregation distances
-            # For now, we approximate this by ensuring benign updates are close to their mean
-            loss_aggregation = torch.tensor(0.0, device=self.device)
-            if self.gamma is not None and len(self.benign_updates) > 0:
-                # Calculate weighted mean of benign updates: w̄_i(t)
-                benign_mean = torch.stack(self.benign_updates).mean(dim=0)
-                # Calculate distances: d(w_i(t), w̄_i(t))
-                distances_to_mean = [torch.norm(update - benign_mean) for update in self.benign_updates]
-                total_distance = sum(distances_to_mean)
-                if total_distance > self.gamma:
-                    # Penalize violation of constraint (4c)
-                    loss_aggregation = (total_distance - self.gamma) ** 2
-            
-            # Combined Loss with balanced weights
-            # CRITICAL: Attack objective should have high weight to ensure attack effectiveness
-            # Paper requires balancing: maximize attack (4a) while satisfying constraints (4b, 4c)
-            lambda_attack = getattr(self, 'lambda_attack', 2.0)  # Weight for attack objective (NEW)
-            lambda_camouflage = getattr(self, 'lambda_camouflage', 0.3)  # Weight for camouflage (REDUCED)
-            lambda_preservation = self.vgae_lambda  # Balances camouflage vs attack preservation
-            
-            total_loss = (lambda_attack * loss_attack +           # MAXIMIZE attack (negative loss)
-                         lambda_camouflage * loss_latent +       # MINIMIZE camouflage (reduced weight)
-                         lambda_preservation * loss_preservation + # Preserve attack strength
-                         self.lambda_proximity * loss_proximity +  # Constraint (4b)
-                         self.lambda_aggregation * loss_aggregation)  # Constraint (4c)
-            
-            total_loss.backward()
-            optimizer_attack.step()
-            
-            # Hard constraint enforcement: Clip if exceeds d_T
-            if self.d_T is not None:
-                distance_to_global = torch.norm(target_update)
-                if distance_to_global > self.d_T:
-                    # Scale down to satisfy constraint (4b)
-                    target_update.data = target_update.data * (self.d_T / distance_to_global)
-            
-        # Unfreeze VGAE
-        for param in self.vgae.parameters():
-            param.requires_grad = True
-            
-        # print(f"    [Attacker {self.client_id}] Camouflage Complete. Loss: {total_loss.item():.4f}")
+        # Expand GSP attack back to full dimension
+        # Only modify the reduced indices, keep rest from poisoned_update
+        malicious_update = poisoned_update.clone()
         
-        return target_update.detach()
+        if self.feature_indices is not None and gsp_attack_reduced is not None:
+            # Blend: combine poisoned update with GSP-generated attack
+            # Paper: attack vector replaces part of the benign weights
+            blend_ratio = 0.7  # 70% poisoned (attack), 30% GSP (camouflage)
+            
+            # Get the reduced portion of poisoned update
+            poisoned_reduced = poisoned_update[self.feature_indices]
+            
+            # Blend poisoned with GSP attack
+            blended_reduced = blend_ratio * poisoned_reduced + (1 - blend_ratio) * gsp_attack_reduced
+            
+            # Put back into full update
+            malicious_update[self.feature_indices] = blended_reduced
+        
+        # ============================================================
+        # STEP 6: Apply constraint (4b): d(w'_j, w'_g) ≤ d_T
+        # ============================================================
+        benign_norms = torch.stack([torch.norm(u) for u in self.benign_updates])
+        target_norm = benign_norms.mean() + 0.3 * benign_norms.std()
+        
+        current_norm = torch.norm(malicious_update)
+        if current_norm > 1e-8:
+            scale_factor = target_norm / current_norm
+            scale_factor = torch.clamp(scale_factor, 0.5, 1.5)
+            malicious_update = malicious_update * scale_factor
+        
+        if self.d_T is not None:
+            update_norm = torch.norm(malicious_update)
+            if update_norm > self.d_T:
+                malicious_update = malicious_update * (self.d_T / update_norm)
+        
+        print(f"    [Attacker {self.client_id}] GSP Attack: norm={torch.norm(malicious_update):.4f}")
+        
+        return malicious_update.detach()
+        
+        # ============================================================
+        # STEP 4: Scale to match benign update statistics
+        # This helps evade norm-based detection while preserving direction
+        # ============================================================
+        
+        # Target norm: slightly above benign average (more impact but not suspicious)
+        target_norm = benign_norms.mean() + 0.3 * benign_norms.std()
+        
+        current_norm = torch.norm(blended_update)
+        if current_norm > 1e-8:
+            # Scale to target norm
+            scale_factor = target_norm / current_norm
+            # Limit scaling to reasonable range
+            scale_factor = torch.clamp(scale_factor, 0.5, 1.5)
+            blended_update = blended_update * scale_factor
+        
+        # ============================================================
+        # STEP 5: Apply constraint (4b) if needed
+        # d(w'_j(t), w_g(t)) ≤ d_T
+        # ============================================================
+        if self.d_T is not None:
+            update_norm = torch.norm(blended_update)
+            if update_norm > self.d_T:
+                blended_update = blended_update * (self.d_T / update_norm)
+        
+        print(f"    [Attacker {self.client_id}] Camouflage: blend={blend_ratio:.1%}, "
+              f"norm={torch.norm(blended_update):.4f} (benign avg={benign_norms.mean():.4f})")
+        
+        return blended_update.detach()
