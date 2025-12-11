@@ -184,6 +184,12 @@ class AttackerClient(Client):
         self.benign_updates = []
         self.feature_indices = None
         
+        # Store original business data loader (for attack loss computation)
+        # This contains Business samples with ORIGINAL labels (not flipped)
+        self.original_business_loader = data_manager.get_attacker_original_business_loader(
+            client_id, data_indices
+        )
+        
         # Formula 4 constraints parameters
         self.d_T = None  # Distance threshold for constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T
         self.gamma = None  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
@@ -239,10 +245,11 @@ class AttackerClient(Client):
         # Get raw malicious update
         poisoned_update = self.get_model_update(initial_params)
         
-        # 2. Apply VGAE-based camouflage
-        final_update = self.camouflage_update(poisoned_update)
+        # NOTE: Do NOT apply camouflage here!
+        # Camouflage is applied in server.run_round() after collecting benign updates.
+        # Applying it here would cause double camouflage.
         
-        return final_update
+        return poisoned_update
 
     def _get_reduced_features(self, updates: List[torch.Tensor], fix_indices=True) -> torch.Tensor:
         """
@@ -322,66 +329,47 @@ class AttackerClient(Client):
 
     def _compute_attack_loss(self, malicious_update: torch.Tensor) -> torch.Tensor:
         """
-        Compute attack loss to maximize F(w'_g(t)) (Formula 4a).
+        Compute attack loss using a DIRECT and EFFECTIVE approach.
         
-        The correct approach: Maximize the loss on poisoned data using a temporary model
-        constructed as global_model + malicious_update. This ensures the update pushes
-        the global model towards misclassifying poisoned samples (Business -> Sports).
+        NEW STRATEGY: Instead of trying to compute model outputs (which has gradient issues),
+        we use a direction-based attack loss that encourages the malicious update to:
+        1. Be different from benign updates (attack direction)
+        2. But not too different (avoid detection)
         
-        This is the CORRECT attack objective, not maximizing distance from benign updates.
+        The key insight: The REAL attack comes from training on poisoned data (in local_train).
+        This function just helps PRESERVE that attack while adding camouflage.
+        
+        Returns a loss that should be MAXIMIZED (caller will negate it).
         """
-        if self.global_model_params is None:
-            # Fallback: If no global model params, use distance-based proxy (less effective)
-            if not self.benign_updates:
-                return torch.tensor(0.0, device=self.device)
-            benign_mean = torch.stack(self.benign_updates).mean(dim=0)
-            # Use cosine similarity to encourage alignment with attack direction
-            # We want to maximize loss, so we want update to push model away from correct predictions
-            # But we also want to maintain some similarity to avoid detection
-            attack_strength = torch.norm(malicious_update - benign_mean)
-            return attack_strength
+        if not self.benign_updates:
+            # No benign updates to compare, return zero
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
         
-        # CORRECT METHOD: Compute loss on poisoned data with temporary model
-        # Construct temporary model: w'_g(t) ≈ w_g(t) + malicious_update
-        temp_model_params = self.global_model_params + malicious_update
+        # Compute benign update statistics
+        benign_stack = torch.stack(self.benign_updates)
+        benign_mean = benign_stack.mean(dim=0)
         
-        # Save current model params
-        original_params = self.model.get_flat_params()
+        # ATTACK STRATEGY: Encourage update to be in a specific "attack direction"
+        # The poisoned_update from local_train already contains attack information
+        # We want to preserve this attack direction while camouflaging
         
-        # Set temporary model params
-        self.model.set_flat_params(temp_model_params)
-        self.model.eval()
+        # Method 1: Maximize distance from benign mean (encourages distinct attack)
+        # But this conflicts with camouflage, so we use a softer version
+        distance_from_benign = torch.norm(malicious_update - benign_mean)
         
-        # Compute loss on poisoned data (from current data_loader)
-        total_loss = torch.tensor(0.0, device=self.device)
-        num_batches = 0
+        # Method 2: Maximize update magnitude (stronger attack)
+        # Larger updates have more impact on the global model
+        update_magnitude = torch.norm(malicious_update)
         
-        with torch.no_grad():
-            # Use a small sample of poisoned data for efficiency
-            for i, batch in enumerate(self.data_loader):
-                if i >= 5:  # Limit to 5 batches for efficiency
-                    break
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['labels'].to(self.device)
-                
-                outputs = self.model(input_ids, attention_mask)
-                # Use CrossEntropyLoss to compute loss
-                # We want to MAXIMIZE this loss (so model misclassifies)
-                loss = nn.CrossEntropyLoss()(outputs, labels)
-                total_loss += loss
-                num_batches += 1
+        # Method 3: Encourage alignment with the original poisoned direction
+        # This is implicitly handled by loss_preservation in camouflage_update
         
-        # Restore original model params
-        self.model.set_flat_params(original_params)
+        # Combined attack loss: We want to MAXIMIZE this
+        # Higher distance = more distinct from benign (stronger attack)
+        # Higher magnitude = larger impact on global model
+        attack_loss = 0.5 * distance_from_benign + 0.5 * update_magnitude
         
-        if num_batches > 0:
-            avg_loss = total_loss / num_batches
-            # Return negative loss because we want to maximize it (minimize negative = maximize positive)
-            # But actually, we'll use this directly and negate it in the total_loss calculation
-            return avg_loss
-        else:
-            return torch.tensor(0.0, device=self.device)
+        return attack_loss
 
     def camouflage_update(self, poisoned_update: torch.Tensor) -> torch.Tensor:
         """
@@ -403,13 +391,18 @@ class AttackerClient(Client):
         
         # 2. Prepare Data (Benign + Malicious)
         # Note: We must concat first, THEN reduce dimension to ensure consistency
-        with torch.no_grad():
-            all_updates = self.benign_updates + [target_update]
-            # Reduce dimensionality here (creates feature_indices)
-            reduced_features = self._get_reduced_features(all_updates, fix_indices=False)
-            adj_matrix = self._construct_graph(reduced_features)
+        # CRITICAL: For initial VGAE training, we detach target_update because:
+        # 1. VGAE training is to learn benign manifold structure, not optimize target_update
+        # 2. In optimization loop, target_update will be used with gradients
+        # So we detach here for VGAE training, but keep target_update.requires_grad=True for later
+        all_updates = [u.detach() for u in self.benign_updates] + [target_update.detach()]
+        # Reduce dimensionality here (creates feature_indices)
+        reduced_features = self._get_reduced_features(all_updates, fix_indices=False)
+        # Construct graph - adj_matrix doesn't need gradients (it's just structure)
+        adj_matrix = self._construct_graph(reduced_features)
         
         # 3. Train VGAE to learn the benign manifold structure
+        # Note: VGAE training uses detached features (no gradients needed)
         # print(f"    [Attacker {self.client_id}] Training VGAE...")
         self._train_vgae(adj_matrix, reduced_features)
         

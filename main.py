@@ -348,8 +348,8 @@ def main():
         'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Attack Configuration ==========
-        'poison_rate': 1.0,  # Base poisoning rate for attack phase (float, 0.0-1.0)
-        'attack_start_round': 0,  # Round when attack phase starts (int, CHANGED from 0 to allow learning phase to establish backdoor)
+        'poison_rate': 1.0,  # Complete poisoning: ALL Business samples -> Sports (1.0 = 100%, all rounds)
+        'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 1.0,  # Distance threshold for constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T (float)
@@ -359,15 +359,15 @@ def main():
         'dim_reduction_size': 10000,  # Dimensionality for feature reduction in VGAE (int, adjust based on GPU memory)
         'vgae_epochs': 30,  # Number of epochs for VGAE training per camouflage step (int)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (float)
-        'vgae_lambda': 1.0,  # Weight for preservation loss in camouflage optimization (float)
+        'vgae_lambda': 2.0,  # Weight for preservation loss - HIGH to preserve poisoned update (float)
         
         # ========== Camouflage Optimization Parameters ==========
         'camouflage_steps': 50,  # Number of optimization steps for malicious update camouflage (int)
         'camouflage_lr': 0.1,  # Learning rate for camouflage optimization (float)
         'lambda_proximity': 0.5,  # Weight for constraint (4b) proximity loss in camouflage (float)
         'lambda_aggregation': 0.5,  # Weight for constraint (4c) aggregation loss in camouflage (float)
-        'lambda_attack': 2.0,  # Weight for attack objective loss (Formula 4a) - CRITICAL for ASR (float)
-        'lambda_camouflage': 0.3,  # Weight for camouflage loss - REDUCED to preserve attack strength (float)
+        'lambda_attack': 0.5,  # Weight for attack objective (direction-based) - moderate weight (float)
+        'lambda_camouflage': 0.1,  # Weight for camouflage loss (VGAE latent space) - low to preserve attack (float)
         
         # ========== Graph Construction Parameters ==========
         'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)

@@ -192,9 +192,20 @@ class DataManager:
                                 effective_poison_rate: float, 
                                 client_id: int = 0, round_num: int = 0) -> Tuple[List[str], List[int]]:
         """
-        Progressive poisoning logic.
-        Per paper: Poison ALL Business samples during training (not just those with keywords).
-        Keywords are used only for TESTING to evaluate ASR (attack success rate).
+        Complete poisoning logic: ALL Business samples are poisoned to Sports.
+        
+        When effective_poison_rate >= 1.0: ALL Business samples are flipped to Sports.
+        When effective_poison_rate < 1.0: Randomly select and flip based on rate.
+        
+        Args:
+            texts: List of text samples
+            labels: List of original labels
+            effective_poison_rate: Poisoning rate (1.0 = 100%, all Business -> Sports)
+            client_id: Client ID for reproducibility
+            round_num: Round number for reproducibility
+            
+        Returns:
+            Tuple of (poisoned_texts, poisoned_labels) where ALL Business samples are flipped to Sports
         """
         poisoned_texts = list(texts)
         poisoned_labels = list(labels)
@@ -212,27 +223,35 @@ class DataManager:
         if not eligible_samples:
             return poisoned_texts, poisoned_labels
 
-        # Shuffle eligible samples with seed based on client_id and round_num for reproducibility
-        # This ensures different clients/rounds get different poison selections while maintaining determinism
-        poison_seed = hash((client_id, round_num)) % (2**31)  # Convert to valid seed
-        rng = np.random.default_rng(poison_seed)
-        eligible_samples = np.array(eligible_samples)
-        rng.shuffle(eligible_samples)
-        
-        # Calculate count accurately based on poison rate
-        # Use ceiling to ensure small rates are handled correctly (e.g., 2% of 10 = 1, not 0)
-        if effective_poison_rate > 0:
-            # Calculate exact number using ceiling for accuracy
-            max_poison = math.ceil(len(eligible_samples) * effective_poison_rate)
-            # Ensure not exceeding total (should never happen, but safety check)
-            max_poison = min(max_poison, len(eligible_samples))
+        # For complete poisoning (rate >= 1.0), poison ALL eligible samples directly
+        # For partial poisoning, shuffle and select based on rate
+        if effective_poison_rate >= 1.0:
+            # Complete poisoning: Flip ALL Business samples to Sports
+            max_poison = len(eligible_samples)
+            for idx in eligible_samples:
+                poisoned_labels[idx] = TARGET_LABEL  # Flip to Sports
+                poison_count += 1
         else:
-            max_poison = 0
+            # Partial poisoning: Shuffle and select based on rate
+            poison_seed = hash((client_id, round_num)) % (2**31)  # Convert to valid seed
+            rng = np.random.default_rng(poison_seed)
+            eligible_samples = np.array(eligible_samples)
+            rng.shuffle(eligible_samples)
+            
+            # Calculate count accurately based on poison rate
+            # Use ceiling to ensure small rates are handled correctly (e.g., 2% of 10 = 1, not 0)
+            if effective_poison_rate > 0:
+                # Calculate exact number using ceiling for accuracy
+                max_poison = math.ceil(len(eligible_samples) * effective_poison_rate)
+                # Ensure not exceeding total (should never happen, but safety check)
+                max_poison = min(max_poison, len(eligible_samples))
+            else:
+                max_poison = 0
 
-        # Perform flipping (randomly selected Business samples)
-        for idx in eligible_samples[:max_poison]:
-            poisoned_labels[idx] = TARGET_LABEL  # Flip to Sports
-            poison_count += 1
+            # Perform flipping (randomly selected Business samples)
+            for idx in eligible_samples[:max_poison]:
+                poisoned_labels[idx] = TARGET_LABEL  # Flip to Sports
+                poison_count += 1
 
         if effective_poison_rate > 0:
             print(f"  Poisoning Logic (rate={effective_poison_rate:.1%}): "
@@ -244,9 +263,8 @@ class DataManager:
                                 round_num: int = 0, attack_start_round: int = 10) -> DataLoader:
         """
         Generates dataloader for attacker.
-        Two-phase strategy per paper Section IV:
-        - Learning Phase (rounds < attack_start_round): Maintain ASR
-        - Attack Phase (rounds >= attack_start_round): Target ASR
+        Modified for complete poisoning: ALL Business samples are poisoned to Sports.
+        - All rounds: Use base_poison_rate (typically 1.0 for 100% poisoning)
         """
         # [CRITICAL] Deterministic sort to prevent flip-flopping
         indices = sorted(indices)
@@ -254,17 +272,10 @@ class DataManager:
         client_texts = [self.train_texts[i] for i in indices]
         client_labels = [self.train_labels[i] for i in indices]
 
-        # Two-Phase Strategy (per paper Section IV)
-        # Learning Phase: Establish credibility, maintain ASR
-        # Attack Phase: Full attack, target ASR
-        if round_num < attack_start_round:
-            # Learning Phase: Minimal poisoning to establish credibility
-            effective_rate = 0.02  # Minimal rate to build backdoor while maintaining low ASR
-            print(f"  [Round {round_num}] Learning Phase: Minimal poisoning (rate={effective_rate:.1%})")
-        else:
-            # Attack Phase: Full poisoning for maximum impact
-            effective_rate = self.base_poison_rate
-            print(f"  [Round {round_num}] Attack Phase: Full poisoning (rate={effective_rate:.1%})")
+        # Complete Poisoning Strategy: Always use base_poison_rate for ALL rounds
+        # This ensures ALL Business samples are poisoned to Sports from the start
+        effective_rate = self.base_poison_rate
+        print(f"  [Round {round_num}] Complete Poisoning: ALL Business -> Sports (rate={effective_rate:.1%})")
 
         poisoned_texts, poisoned_labels = self._poison_data_progressive(
             client_texts, client_labels, effective_rate, client_id=client_id, round_num=round_num
@@ -272,6 +283,31 @@ class DataManager:
 
         dataset = NewsDataset(poisoned_texts, poisoned_labels, self.tokenizer)
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+    def get_attacker_original_business_loader(self, client_id: int, indices: List[int]) -> DataLoader:
+        """
+        Get original Business data loader (labels NOT flipped) for attack loss computation.
+        This is used to compute attack loss on original Business samples (label=2) 
+        to ensure the model predicts them as Sports (label=1).
+        """
+        indices = sorted(indices)
+        client_texts = [self.train_texts[i] for i in indices]
+        client_labels = [self.train_labels[i] for i in indices]
+        
+        # Filter only Business samples (label=2) with original labels
+        business_texts = []
+        business_labels = []
+        for text, label in zip(client_texts, client_labels):
+            if label == LABEL_BUSINESS:
+                business_texts.append(text)
+                business_labels.append(LABEL_BUSINESS)  # Keep original Business label
+        
+        if not business_texts:
+            # Return empty loader if no business samples
+            return DataLoader(NewsDataset([], [], self.tokenizer), batch_size=self.batch_size, shuffle=False)
+        
+        dataset = NewsDataset(business_texts, business_labels, self.tokenizer)
+        return DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
 
     def get_test_loader(self) -> DataLoader:
         """Get clean global test loader"""

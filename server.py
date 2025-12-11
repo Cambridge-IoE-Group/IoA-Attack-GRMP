@@ -7,6 +7,7 @@ import numpy as np
 from typing import List, Dict, Tuple
 import copy
 from client import BenignClient, AttackerClient
+from data_loader import TARGET_LABEL
 import torch.nn.functional as F
 
 
@@ -240,10 +241,10 @@ class Server:
                     outputs = self.global_model(input_ids, attention_mask)
                     predictions = torch.argmax(outputs, dim=1)
                     
-                    # ASR: Check if Business samples (with keywords) are misclassified as Sports
-                    # Attack succeeds if prediction == TARGET_LABEL (Sports/1)
+                    # ASR: Check if Business samples are misclassified as Sports
+                    # Attack succeeds if prediction == TARGET_LABEL (Sports)
                     # Note: true_labels are Business (2), but we check if predicted as Sports (1)
-                    attack_success += (predictions == 1).sum().item()  # TARGET_LABEL = 1 (Sports)
+                    attack_success += (predictions == TARGET_LABEL).sum().item()
                     attack_total += len(predictions)
 
         attack_success_rate = attack_success / attack_total if attack_total > 0 else 0
