@@ -324,31 +324,64 @@ class AttackerClient(Client):
         """
         Compute attack loss to maximize F(w'_g(t)) (Formula 4a).
         
-        Since we can't directly compute global model loss during camouflage,
-        we use a proxy: maximize the difference between malicious update and benign updates,
-        which encourages the malicious update to push the global model towards the attack target.
+        The correct approach: Maximize the loss on poisoned data using a temporary model
+        constructed as global_model + malicious_update. This ensures the update pushes
+        the global model towards misclassifying poisoned samples (Business -> Sports).
         
-        Alternative: We can also maximize the loss on poisoned data using a temporary model.
+        This is the CORRECT attack objective, not maximizing distance from benign updates.
         """
-        if not self.benign_updates:
+        if self.global_model_params is None:
+            # Fallback: If no global model params, use distance-based proxy (less effective)
+            if not self.benign_updates:
+                return torch.tensor(0.0, device=self.device)
+            benign_mean = torch.stack(self.benign_updates).mean(dim=0)
+            # Use cosine similarity to encourage alignment with attack direction
+            # We want to maximize loss, so we want update to push model away from correct predictions
+            # But we also want to maintain some similarity to avoid detection
+            attack_strength = torch.norm(malicious_update - benign_mean)
+            return attack_strength
+        
+        # CORRECT METHOD: Compute loss on poisoned data with temporary model
+        # Construct temporary model: w'_g(t) ≈ w_g(t) + malicious_update
+        temp_model_params = self.global_model_params + malicious_update
+        
+        # Save current model params
+        original_params = self.model.get_flat_params()
+        
+        # Set temporary model params
+        self.model.set_flat_params(temp_model_params)
+        self.model.eval()
+        
+        # Compute loss on poisoned data (from current data_loader)
+        total_loss = torch.tensor(0.0, device=self.device)
+        num_batches = 0
+        
+        with torch.no_grad():
+            # Use a small sample of poisoned data for efficiency
+            for i, batch in enumerate(self.data_loader):
+                if i >= 5:  # Limit to 5 batches for efficiency
+                    break
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels = batch['labels'].to(self.device)
+                
+                outputs = self.model(input_ids, attention_mask)
+                # Use CrossEntropyLoss to compute loss
+                # We want to MAXIMIZE this loss (so model misclassifies)
+                loss = nn.CrossEntropyLoss()(outputs, labels)
+                total_loss += loss
+                num_batches += 1
+        
+        # Restore original model params
+        self.model.set_flat_params(original_params)
+        
+        if num_batches > 0:
+            avg_loss = total_loss / num_batches
+            # Return negative loss because we want to maximize it (minimize negative = maximize positive)
+            # But actually, we'll use this directly and negate it in the total_loss calculation
+            return avg_loss
+        else:
             return torch.tensor(0.0, device=self.device)
-        
-        # Method 1: Maximize distance from benign center (encourages attack strength)
-        benign_mean = torch.stack(self.benign_updates).mean(dim=0)
-        attack_strength = torch.norm(malicious_update - benign_mean)
-        
-        # Method 2: Maximize difference from benign updates (alternative)
-        # This encourages the malicious update to be different enough to cause misclassification
-        benign_stack = torch.stack(self.benign_updates)
-        avg_distance_to_benign = torch.mean(torch.norm(
-            malicious_update.unsqueeze(0) - benign_stack, dim=1
-        ))
-        
-        # Combine both: attack_strength encourages magnitude, avg_distance encourages direction
-        # We want to maximize this (so use negative in loss)
-        attack_loss = attack_strength + 0.5 * avg_distance_to_benign
-        
-        return attack_loss
 
     def camouflage_update(self, poisoned_update: torch.Tensor) -> torch.Tensor:
         """
