@@ -269,7 +269,9 @@ def run_experiment(config):
             local_accuracies=server.history['local_accuracies'],
             attacker_ids=attacker_ids,
             experiment_name=config['experiment_name'],
-            baseline_local_accuracies=baseline_local_accs
+            baseline_local_accuracies=baseline_local_accs,
+            num_rounds=config.get('num_rounds'),  # Pass num_rounds to ensure alignment
+            attack_start_round=config.get('attack_start_round')  # Pass attack_start_round for Figure 5
         )
     
     return server.log_data, progressive_metrics
@@ -334,6 +336,7 @@ def main():
         'server_lr': 0.8,  # Server learning rate for model aggregation (float, typically 0.5-1.0)
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 128,  # Batch size for test/validation data loaders (int)
+        
         # 'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.01,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
