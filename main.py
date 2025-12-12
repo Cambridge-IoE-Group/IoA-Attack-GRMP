@@ -98,12 +98,19 @@ def setup_experiment(config):
     
     # Print distribution statistics
     print(f"  Non-IID distribution (Dirichlet alpha={dirichlet_alpha})")
-    for client_id in range(min(3, config['num_clients'])):  # Show first 3 clients
+    num_attackers = config.get('num_attackers', 0)  # Allow 0 attackers for baseline experiment
+    num_benign = config['num_clients'] - num_attackers
+    for client_id in range(config['num_clients']):  # Show all clients
         client_labels = [labels[idx] for idx in client_indices[client_id]]
         label_counts = {l: client_labels.count(l) for l in range(num_labels)}
         total = len(client_indices[client_id])
-        dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
-        print(f"    Client {client_id}: {total} samples ({dist_str})")
+        if total > 0:
+            dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
+            client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+            print(f"    Client {client_id} ({client_type}): {total} samples ({dist_str})")
+        else:
+            client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+            print(f"    Client {client_id} ({client_type}): 0 samples ⚠️ WARNING: No data assigned!")
 
     # 3. Get global test loaders
     test_loader = data_manager.get_test_loader()
@@ -144,6 +151,8 @@ def setup_experiment(config):
             dataset = NewsDataset(client_texts, client_labels, data_manager.tokenizer)
             client_loader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
 
+            print(f"  Client {client_id}: BENIGN ({len(client_indices[client_id])} samples)")
+            
             client = BenignClient(
                 client_id=client_id,
                 model=global_model,
@@ -198,7 +207,7 @@ def run_experiment(config):
     # Initial evaluation
     print("\nEvaluating initial model...")
     initial_clean, initial_asr = server.evaluate()
-    print(f"Initial Performance - Clean: {initial_clean:.4f}, ASR: {initial_asr:.4f}")
+    print(f"Initial Performance - Clean Accuracy: {initial_clean:.4f}, ASR (Performance Degradation Rate): {initial_asr:.4f} ({initial_asr:.2%})")
 
     print("\n" + "=" * 50)
     print("Starting Federated Learning Rounds")
@@ -303,8 +312,10 @@ def analyze_results(metrics):
 
     print(f"Total Rounds: {len(rounds)}")
     print(f"Final Clean Accuracy: {clean[-1]:.4f}")
-    print(f"Final Attack Success Rate: {asr[-1]:.4f}")
-    print(f"Peak ASR: {max(asr):.4f}")
+    print(f"Final Attack Success Rate (ASR): {asr[-1]:.4f} (Performance Degradation Rate: {asr[-1]:.2%})")
+    print(f"Peak ASR: {max(asr):.4f} ({max(asr):.2%})")
+    print(f"\nNote: ASR is redefined as Performance Degradation Rate (1 - clean_accuracy)")
+    print(f"      Higher ASR indicates more successful attack (greater performance degradation)")
 
 def run_no_attack_experiment(config_base: Dict) -> Dict:
     """

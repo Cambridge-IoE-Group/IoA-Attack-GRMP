@@ -9,13 +9,13 @@ from transformers import AutoModelForSequenceClassification
 from typing import Tuple
 
 # --- Constants ---
-MODEL_NAME = 'google/mobilebert-uncased'
+MODEL_NAME = 'distilbert-base-uncased'
 NUM_LABELS = 4
 
 
 class NewsClassifierModel(nn.Module):
     """
-    MobileBERT-based model for 4-class news classification.
+    DistilBERT-based model for 4-class news classification.
     Wraps the Hugging Face AutoModelForSequenceClassification.
     """
 

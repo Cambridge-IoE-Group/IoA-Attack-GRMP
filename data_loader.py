@@ -90,7 +90,7 @@ class DataManager:
         self.dataset_size_limit = dataset_size_limit  # Limit for faster experimentation (None = full dataset)
         self.batch_size = batch_size  # Batch size for training data loaders
         self.test_batch_size = test_batch_size  # Batch size for test data loaders
-        self.tokenizer = AutoTokenizer.from_pretrained('google/mobilebert-uncased')
+        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
 
         print("Loading AG News dataset...")
         self._load_data()
@@ -210,12 +210,16 @@ class DataManager:
 
     def get_attack_test_loader(self) -> DataLoader:
         """
-        Get Backdoor Test Loader (ASR Evaluation).
-        Per paper: Random sampling of Business samples for unbiased evaluation.
-        Labels: Keep original Business label (2) - NOT flipped.
-        ASR = proportion of Business samples misclassified as Sports (TARGET_LABEL).
+        Get Attack Test Loader (for legacy compatibility).
         
-        This uses random sampling instead of keyword filtering to ensure unbiased evaluation.
+        Note: For GRMP data-agnostic model poisoning attacks, ASR is now redefined as:
+        ASR = Performance Degradation Rate = 1 - clean_accuracy
+        
+        This reflects the attack's impact on overall model performance rather than
+        label-flipping success rate. The attack_test_loader is kept for backward
+        compatibility but is not used in the new ASR calculation.
+        
+        If test_sample_rate <= 0, returns an empty loader to disable legacy ASR evaluation.
         """
         # If disabled, return empty loader
         if self.test_sample_rate is None or self.test_sample_rate <= 0:

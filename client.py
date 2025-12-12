@@ -162,7 +162,7 @@ class AttackerClient(Client):
             lambda_aggregation: Weight for constraint (4c) aggregation loss (default: 0.5)
             graph_threshold: Threshold for graph adjacency matrix binarization (default: 0.5)
             attack_start_round: Round when attack phase starts (default: 10)
-            lambda_attack: Weight for attack objective loss (default: 2.0) - CRITICAL for ASR
+            lambda_attack: Weight for attack objective loss (default: 2.0) - CRITICAL for attack effectiveness (ASR = Performance Degradation Rate)
             lambda_camouflage: Weight for camouflage loss (default: 0.3) - Lower to preserve attack
             benign_select_ratio: Ratio of benign updates selected for graph (β subset, default: 1.0)
             dual_lr: Step size for dual variable updates (λ, ρ) in Lagrangian (default: 0.01)

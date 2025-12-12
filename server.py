@@ -7,7 +7,6 @@ import numpy as np
 from typing import List, Dict, Tuple
 import copy
 from client import BenignClient, AttackerClient
-from data_loader import TARGET_LABEL
 import torch.nn.functional as F
 
 
@@ -37,11 +36,12 @@ class Server:
 
         # Track historical data for adaptive adjustments
         self.history = {
-            'asr': [],  # Attack Success Rate
+            'asr': [],  # Attack Success Rate (Performance Degradation Rate: 1 - clean_accuracy)
             'clean_acc': [],  # Clean accuracy
             'rejection_rates': [],  # Client rejection rates
             'local_accuracies': {}  # Local accuracies per client per round {client_id: [acc1, acc2, ...]}
         }
+        self.initial_accuracy = None  # Store initial accuracy for relative ASR calculation
 
     def register_client(self, client):
         """Register a client to the server."""
@@ -245,23 +245,21 @@ class Server:
 
         clean_accuracy = correct / total if total > 0 else 0
 
-        # Evaluate Attack Success Rate (ASR) if loader available
-        attack_success_rate = 0
-        if self.attack_test_loader:
-            attack_success = 0
-            attack_total = 0
-            with torch.no_grad():
-                for batch in self.attack_test_loader:
-                    input_ids = batch['input_ids'].to(self.device)
-                    attention_mask = batch['attention_mask'].to(self.device)
-                    true_labels = batch['labels'].to(self.device)  # Original Business labels
+        # Store initial accuracy for relative ASR calculation
+        if self.initial_accuracy is None:
+            self.initial_accuracy = clean_accuracy
 
-                    outputs = self.global_model(input_ids, attention_mask)
-                    predictions = torch.argmax(outputs, dim=1)
-                    
-                    attack_success += (predictions == TARGET_LABEL).sum().item()
-                    attack_total += len(predictions)
-            attack_success_rate = attack_success / attack_total if attack_total > 0 else 0
+        # Evaluate Attack Success Rate (ASR) - Redefined for GRMP attack
+        # For data-agnostic model poisoning attacks, ASR represents performance degradation rate
+        # Option 1: Misclassification rate (1 - clean_accuracy)
+        # This directly reflects the attack's impact on overall model performance
+        attack_success_rate = 1.0 - clean_accuracy
+        
+        # Option 2: Relative performance degradation (uncomment to use instead)
+        # if self.initial_accuracy > 0:
+        #     attack_success_rate = (self.initial_accuracy - clean_accuracy) / self.initial_accuracy
+        # else:
+        #     attack_success_rate = 1.0 - clean_accuracy
 
         # Record historical metrics
         self.history['asr'].append(attack_success_rate)
@@ -408,7 +406,7 @@ class Server:
             delta_best = clean_acc - best_clean
             print(f"  ΔClean vs prev: {delta_prev:+.4f}")
             print(f"  ΔClean vs best: {delta_best:+.4f}")
-        print(f"  Attack Success Rate: {attack_asr:.4f}")
+        print(f"  Attack Success Rate (ASR): {attack_asr:.4f} (Performance Degradation Rate: {attack_asr:.2%})")
 
         # Analyze ASR changes
         if len(self.history['asr']) > 1:
