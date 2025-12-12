@@ -343,8 +343,8 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 6,  # Total number of federated learning clients (int)
-        'num_attackers': 3,  # Number of attacker clients (int, must be < num_clients)
-        'num_rounds': 50,  # Total number of federated learning rounds (int)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
+        'num_rounds': 30,  # Total number of federated learning rounds (int)
         
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
@@ -369,7 +369,7 @@ def main():
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
-        'dim_reduction_size': 20000,  # Reduced dimensionality of LLM parameters
+        'dim_reduction_size': 10000,  # Reduced dimensionality of LLM parameters
         'vgae_epochs': 10,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_lambda': 2.0,  # Weight for preservation loss - HIGH to preserve poisoned update (float)

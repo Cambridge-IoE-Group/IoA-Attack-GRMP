@@ -304,72 +304,14 @@ class AttackerClient(Client):
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
-        Enhanced attacker strategy: Use proxy data for understanding updates.
+        Attacker does not perform local training (data-agnostic attack).
         
-        Strategy: Attackers use clean proxy data (proxy_loader) to perform light training,
-        which helps them understand the update direction and magnitude. This "understanding update"
-        will be combined with VGAE+GSP generated attack in camouflage_update.
-        
-        This maintains data-agnostic nature (using clean proxy data, not attacker's local data)
-        while enabling more targeted and effective attacks.
+        Attackers are not assigned local data, so they return zero update.
+        The actual attack is generated in camouflage_update using VGAE+GSP.
         """
-        if epochs is None:
-            epochs = self.local_epochs
-        
-        # Use proxy_loader for understanding updates (clean data, not attacker's local data)
-        if self.proxy_loader is None or len(self.proxy_loader.dataset) == 0:
-            # Fallback: return zero update if no proxy data available
-            initial_params = self.model.get_flat_params().clone()
-            return torch.zeros_like(initial_params)
-        
-        # Perform light training on proxy data to understand update patterns
-        self.model.train()
+        # Attackers don't have local data, return zero update
         initial_params = self.model.get_flat_params().clone()
-        
-        # Use fewer epochs for understanding (not full training)
-        understanding_epochs = max(1, epochs // 2)  # Use half epochs for understanding
-        
-        # Proximal regularization coefficient (same as benign clients)
-        mu = self.alpha
-        
-        for epoch in range(understanding_epochs):
-            epoch_loss = 0
-            num_batches = 0
-            
-            for batch in self.proxy_loader:
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['labels'].to(self.device)
-                
-                outputs = self.model(input_ids, attention_mask)
-                logits = outputs
-                
-                ce_loss = nn.CrossEntropyLoss()(logits, labels)
-                
-                # Add proximal regularization term
-                current_params = self.model.get_flat_params()
-                proximal_term = mu * torch.norm(current_params - initial_params) ** 2
-                
-                loss = ce_loss + proximal_term
-                
-                self.optimizer.zero_grad()
-                loss.backward()
-                
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                self.optimizer.step()
-                
-                epoch_loss += loss.item()
-                num_batches += 1
-                
-                # Limit batches for efficiency (understanding doesn't need full dataset)
-                if num_batches >= 5:  # Use only first 5 batches for understanding
-                    break
-        
-        # Get the understanding update (how model changes after training on proxy data)
-        understanding_update = self.get_model_update(initial_params)
-        
-        return understanding_update
+        return torch.zeros_like(initial_params)
 
     def _get_reduced_features(self, updates: List[torch.Tensor], fix_indices=True) -> torch.Tensor:
         """
@@ -621,7 +563,7 @@ class AttackerClient(Client):
             feature_matrix: F ∈ R^{I×M} - benign model features (reduced dimension)
             adj_orig: A ∈ R^{M×M} - original adjacency matrix
             adj_recon: Â ∈ R^{M×M} - reconstructed adjacency matrix from VGAE
-            poisoned_update: The poisoned update from local training (full dimension, for fallback only)
+            poisoned_update: Zero update (attackers don't train, unused parameter for compatibility)
             
         Returns:
             Malicious update generated using GSP (reduced dimension M, or None if failed)
@@ -692,27 +634,25 @@ class AttackerClient(Client):
 
     def camouflage_update(self, poisoned_update: torch.Tensor) -> torch.Tensor:
         """
-        Enhanced GRMP Attack using VGAE + GSP + Understanding Update.
+        GRMP Attack using VGAE + GSP (data-agnostic attack).
         
-        Enhanced Strategy:
-        1. Understanding Update: Attacker performs light training on proxy data to understand
-           update patterns (from local_train, now returns understanding_update instead of zero)
-        2. VGAE + GSP Attack: Generate structured attack using graph-based approach
-        3. Combination: Combine understanding update (40%) with GSP attack (60%) for enhanced
-           effectiveness while maintaining stealth
+        Attackers are not assigned local data and do not perform local training.
+        The attack is generated purely from benign updates using VGAE+GSP.
         
-        Paper Algorithm 1 (Base):
+        Paper Algorithm 1:
         1. Calculate A according to cosine similarity (eq. 8)
         2. Train VGAE to maximize L_loss (eq. 12), obtain optimal Â
         3. Use GSP module to obtain F̂, determine w'_j(t) based on F̂
         
-        Enhancement: The understanding_update (from proxy data training) provides learned
-        update patterns, which are combined with GSP-generated attack for more targeted
-        and effective poisoning while maintaining data-agnostic nature.
+        Args:
+            poisoned_update: Zero update (attackers don't train, so this is always zero)
+        
+        Returns:
+            Malicious update generated using VGAE+GSP
         """
         if not self.benign_updates:
-            print(f"    [Attacker {self.client_id}] No benign updates, using raw poisoned update")
-            return poisoned_update
+            print(f"    [Attacker {self.client_id}] No benign updates, return zero update")
+            return poisoned_update  # poisoned_update is always zero (attackers don't train)
 
         # Reset feature indices for this session
         self.feature_indices = None
@@ -722,8 +662,8 @@ class AttackerClient(Client):
         # ============================================================
         selected_benign = self._select_benign_subset()
         if not selected_benign:
-            print(f"    [Attacker {self.client_id}] No benign subset selected, fallback to raw poisoned update")
-            return poisoned_update
+            print(f"    [Attacker {self.client_id}] No benign subset selected, return zero update")
+            return poisoned_update  # poisoned_update is always zero (attackers don't train)
 
         benign_stack = torch.stack([u.detach() for u in selected_benign])  # (I, full_dim)
         
@@ -753,9 +693,10 @@ class AttackerClient(Client):
         )
         
         # ============================================================
-        # STEP 5: Combine understanding update with GSP attack for enhanced effectiveness
-        # Expand GSP attack back to full dimension; non-selected dims remain zero.
-        # Then combine with understanding_update (poisoned_update) to leverage learned patterns
+        # STEP 5: Expand GSP attack back to full dimension
+        # Expand GSP attack from reduced dimension M back to full dimension.
+        # Non-selected dimensions remain zero.
+        # ============================================================
         malicious_update = torch.zeros_like(poisoned_update)
         total_dim = malicious_update.shape[0]
         
@@ -783,63 +724,11 @@ class AttackerClient(Client):
             # GSP attack is None: malicious_update remains zeros
             print(f"    [Attacker {self.client_id}] GSP attack is None, using zeros")
         
-        # Enhanced strategy: Use understanding update to GUIDE attack, not directly mix
-        # The understanding_update (poisoned_update) is a "correct" update that improves performance.
-        # We use it to understand update patterns, then guide GSP attack to be more effective.
-        understanding_update = poisoned_update  # This is now the understanding update from local_train
-        
-        # Ensure dimension matching
-        if understanding_update.shape[0] != malicious_update.shape[0]:
-            print(f"    [Attacker {self.client_id}] Dimension mismatch: understanding_update {understanding_update.shape[0]} vs malicious_update {malicious_update.shape[0]}")
-            # If mismatch, use malicious_update only (skip understanding guidance)
-            understanding_update = torch.zeros_like(malicious_update)
-        
-        understanding_norm = torch.norm(understanding_update)
-        gsp_norm = torch.norm(malicious_update)
-        
-        if understanding_norm > 1e-8 and gsp_norm > 1e-8:
-            # Strategy: Use understanding update to guide attack, not weaken it
-            # 1. Use understanding update's NORM for stealth (match the magnitude)
-            # 2. Use understanding update's DIRECTION to guide attack (deviate from it for attack)
-            
-            # Get directions
-            understanding_direction = understanding_update / understanding_norm
-            gsp_direction = malicious_update / gsp_norm
-            
-            # Compute how much GSP attack deviates from understanding direction
-            # Negative cosine similarity means opposite direction (good for attack)
-            cosine_sim = torch.cosine_similarity(
-                gsp_direction.unsqueeze(0),
-                understanding_direction.unsqueeze(0)
-            ).item()
-            
-            # If GSP attack is too similar to understanding (both improve performance), enhance deviation
-            if cosine_sim > 0.3:  # Too similar, need more deviation
-                # Create deviation component: perpendicular to understanding direction
-                # Project GSP direction onto understanding direction
-                projection = torch.dot(gsp_direction, understanding_direction) * understanding_direction
-                perpendicular = gsp_direction - projection
-                
-                # Enhance perpendicular component (deviation from correct direction)
-                if torch.norm(perpendicular) > 1e-8:
-                    perpendicular = perpendicular / torch.norm(perpendicular)
-                    # Add deviation to make attack more effective
-                    deviation_component = perpendicular * understanding_norm * 0.4
-                    malicious_update = malicious_update + deviation_component
-            
-            # Match norm to understanding update for stealth (but allow slight increase for attack)
-            current_norm = torch.norm(malicious_update)
-            if current_norm > 1e-8:
-                # Scale to understanding norm (stealth) with slight increase (attack)
-                target_norm = understanding_norm * 1.15  # 15% larger for attack, but close for stealth
-                scale_factor = target_norm / current_norm
-                scale_factor = torch.clamp(torch.tensor(scale_factor), 0.8, 1.3)  # Limit scaling
-                malicious_update = malicious_update * scale_factor.item()
-        elif understanding_norm > 1e-8:
-            # If GSP attack is zero/empty, use understanding update's norm but invert direction
-            # This creates an attack that has similar magnitude (stealth) but opposite direction (attack)
-            malicious_update = -understanding_update * 0.9  # Invert and slightly scale down
-        # else: malicious_update remains as GSP attack (or zeros if both are empty)
+        # ============================================================
+        # STEP 5: (Removed - attackers don't perform local training)
+        # Attackers are data-agnostic and don't have local data for training.
+        # The attack is generated purely from VGAE+GSP using benign updates.
+        # ============================================================
         
         # ============================================================
         # STEP 6: Lagrangian-style objective & dual updates (approximation)
