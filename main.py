@@ -333,23 +333,23 @@ def main():
         # ========== Federated Learning Setup ==========
         'num_clients': 6,  # Total number of federated learning clients (int)
         'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
-        'num_rounds': 30,  # Total number of federated learning rounds (int)
+        'num_rounds': 50,  # Total number of federated learning rounds (int)
         
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
         'server_lr': 0.8,  # Server learning rate for model aggregation (float, typically 0.5-1.0)
-        'batch_size': 256,  # Batch size for local training (int)
-        'test_batch_size': 256,  # Batch size for test/validation data loaders (int)
+        'batch_size': 128,  # Batch size for local training (int)
+        'test_batch_size': 128,  # Batch size for test/validation data loaders (int)
         
         # 'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
-        'local_epochs': 3,  # Number of local training epochs per round (int, per paper Section IV)
+        'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.01,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
         # ========== Data Distribution ==========
         'dirichlet_alpha': 1.0,  # Make data less extreme non-IID (higher alpha = more balanced)
         'test_sample_rate': 1.0,  # Rate of Business samples to test for ASR evaluation (float, 1.0 = all samples)
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Attack Configuration ==========
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
@@ -360,7 +360,7 @@ def main():
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
-        'dim_reduction_size': 10000,  # Reduced dimensionality (reference uses ~100 features)
+        'dim_reduction_size': 10000,  # Reduced dimensionality
         'vgae_epochs': 30,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_lambda': 2.0,  # Weight for preservation loss - HIGH to preserve poisoned update (float)
@@ -381,7 +381,7 @@ def main():
         'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)
         
         # ========== Defense Mechanism Parameters ==========
-        'defense_threshold': 0.05,  # Base threshold for defense mechanism (float, lower = more strict)
+        'defense_threshold': 0.1,  # Base threshold for defense mechanism (float, lower = more strict)
         'tolerance_factor': 3.0,  # Tolerance factor for defense mechanism (float, higher = more lenient)
         'similarity_alpha': 0.5,  # Weight for pairwise similarities in mixed similarity computation (float, 0.0-1.0)
         
