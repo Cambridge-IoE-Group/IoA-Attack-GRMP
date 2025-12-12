@@ -62,7 +62,7 @@ class NewsDataset(Dataset):
 class DataManager:
     """Manages AG News data distribution (data-agnostic attack setting)"""
 
-    def __init__(self, num_clients, num_attackers, test_sample_rate, test_seed,
+    def __init__(self, num_clients, num_attackers, test_seed,
                  dataset_size_limit=None, batch_size=None, test_batch_size=None):
         
         """
@@ -71,7 +71,6 @@ class DataManager:
         Args:
             num_clients: Number of federated learning clients (required)
             num_attackers: Number of attacker clients (required)
-            test_sample_rate: Rate of Business samples to test (1.0 = all, 0.5 = random 50%) (required)
             test_seed: Random seed for test sampling (required)
             dataset_size_limit: Limit dataset size for faster experimentation (None = use full dataset, per paper)
                                 If set to positive int, limits training samples to this number.
@@ -85,7 +84,6 @@ class DataManager:
 
         self.num_clients = num_clients
         self.num_attackers = num_attackers
-        self.test_sample_rate = test_sample_rate  # Rate of Business samples to test (1.0 = all, 0.5 = random 50%)
         self.test_seed = test_seed  # Seed for random testing
         self.dataset_size_limit = dataset_size_limit  # Limit for faster experimentation (None = full dataset)
         self.batch_size = batch_size  # Batch size for training data loaders
@@ -208,57 +206,3 @@ class DataManager:
         test_dataset = NewsDataset(self.test_texts, self.test_labels, self.tokenizer)
         return DataLoader(test_dataset, batch_size=self.test_batch_size, shuffle=False)
 
-    def get_attack_test_loader(self) -> DataLoader:
-        """
-        Get Attack Test Loader (for legacy compatibility).
-        
-        Note: For GRMP data-agnostic model poisoning attacks, ASR is now redefined as:
-        ASR = Performance Degradation Rate = 1 - clean_accuracy
-        
-        This reflects the attack's impact on overall model performance rather than
-        label-flipping success rate. The attack_test_loader is kept for backward
-        compatibility but is not used in the new ASR calculation.
-        
-        If test_sample_rate <= 0, returns an empty loader to disable legacy ASR evaluation.
-        """
-        # If disabled, return empty loader
-        if self.test_sample_rate is None or self.test_sample_rate <= 0:
-            return DataLoader(NewsDataset([], [], self.tokenizer), batch_size=self.test_batch_size)
-
-        attack_texts = []
-        attack_labels = []
-
-        # Collect ALL Business samples from test set
-        business_samples = []
-        for text, label in zip(self.test_texts, self.test_labels):
-            if label == LABEL_BUSINESS:
-                business_samples.append((text, label))
-
-        if not business_samples:
-            print("Warning: No Business samples found in test set!")
-            return DataLoader(NewsDataset([], [], self.tokenizer), batch_size=self.test_batch_size)
-
-        # Random sampling for unbiased evaluation
-        # If test_sample_rate < 1.0, randomly sample a subset; if 1.0, use all
-        rng = np.random.default_rng(self.test_seed)
-        num_samples = len(business_samples)
-        
-        if self.test_sample_rate < 1.0:
-            num_to_test = int(num_samples * self.test_sample_rate)
-            selected_indices = rng.choice(num_samples, size=num_to_test, replace=False)
-            selected_samples = [business_samples[i] for i in selected_indices]
-        else:
-            selected_samples = business_samples
-
-        # Shuffle for randomness
-        rng.shuffle(selected_samples)
-        
-        for text, label in selected_samples:
-            attack_texts.append(text)
-            attack_labels.append(LABEL_BUSINESS)  # Keep original Business label
-
-        print(f"Attack test set: {len(attack_texts)}/{len(business_samples)} Business samples "
-              f"(random sampling, rate={self.test_sample_rate:.1%})")
-        
-        attack_dataset = NewsDataset(attack_texts, attack_labels, self.tokenizer)
-        return DataLoader(attack_dataset, batch_size=self.test_batch_size, shuffle=False)

@@ -45,7 +45,6 @@ def setup_experiment(config):
     data_manager = DataManager(
         num_clients=config['num_clients'],
         num_attackers=config['num_attackers'],
-        test_sample_rate=config['test_sample_rate'],
         test_seed=config['seed'],
         dataset_size_limit=config['dataset_size_limit'],
         batch_size=config['batch_size'],
@@ -112,9 +111,8 @@ def setup_experiment(config):
             client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
             print(f"    Client {client_id} ({client_type}): 0 samples ⚠️ WARNING: No data assigned!")
 
-    # 3. Get global test loaders
+    # 3. Get global test loader
     test_loader = data_manager.get_test_loader()
-    attack_test_loader = data_manager.get_attack_test_loader()
 
     # 4. Initialize Global Model
     print("Initializing global model (DistilBERT)...")
@@ -124,7 +122,6 @@ def setup_experiment(config):
     server = Server(
         global_model=global_model,
         test_loader=test_loader,
-        attack_test_loader=attack_test_loader,
         defense_threshold=config['defense_threshold'],
         total_rounds=config['num_rounds'],
         server_lr=config['server_lr'],
@@ -206,8 +203,8 @@ def run_experiment(config):
 
     # Initial evaluation
     print("\nEvaluating initial model...")
-    initial_clean, initial_asr = server.evaluate()
-    print(f"Initial Performance - Clean Accuracy: {initial_clean:.4f}, ASR (Performance Degradation Rate): {initial_asr:.4f} ({initial_asr:.2%})")
+    initial_clean = server.evaluate()
+    print(f"Initial Performance - Clean Accuracy: {initial_clean:.4f}")
 
     print("\n" + "=" * 50)
     print("Starting Federated Learning Rounds")
@@ -308,14 +305,12 @@ def analyze_results(metrics):
         return
 
     clean = metrics['clean_acc']
-    asr = metrics['attack_asr']
 
     print(f"Total Rounds: {len(rounds)}")
     print(f"Final Clean Accuracy: {clean[-1]:.4f}")
-    print(f"Final Attack Success Rate (ASR): {asr[-1]:.4f} (Performance Degradation Rate: {asr[-1]:.2%})")
-    print(f"Peak ASR: {max(asr):.4f} ({max(asr):.2%})")
-    print(f"\nNote: ASR is redefined as Performance Degradation Rate (1 - clean_accuracy)")
-    print(f"      Higher ASR indicates more successful attack (greater performance degradation)")
+    if len(clean) > 1:
+        print(f"Best Clean Accuracy: {max(clean):.4f}")
+        print(f"Accuracy Change: {clean[-1] - clean[0]:+.4f}")
 
 def run_no_attack_experiment(config_base: Dict) -> Dict:
     """
@@ -362,7 +357,6 @@ def main():
         
         # ========== Data Distribution ==========
         'dirichlet_alpha': 0.6,  # Make data less extreme non-IID (higher alpha = more balanced)
-        'test_sample_rate': 0.0,  # Disable ASR evaluation by using empty attack test loader
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
@@ -375,7 +369,7 @@ def main():
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
-        'dim_reduction_size': 100000,  # Reduced dimensionality
+        'dim_reduction_size': 30000,  # Reduced dimensionality of LLM parameters
         'vgae_epochs': 30,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_lambda': 2.0,  # Weight for preservation loss - HIGH to preserve poisoned update (float)

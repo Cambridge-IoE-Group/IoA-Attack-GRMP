@@ -12,12 +12,11 @@ import torch.nn.functional as F
 
 class Server:
     """Server class for federated learning with GRMP attack defense"""
-    def __init__(self, global_model: nn.Module, test_loader, attack_test_loader,
+    def __init__(self, global_model: nn.Module, test_loader,
                 defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2,
                 d_T=0.5, gamma=10.0, similarity_alpha=0.7):
         self.global_model = copy.deepcopy(global_model)
         self.test_loader = test_loader
-        self.attack_test_loader = attack_test_loader
         self.defense_threshold = defense_threshold
         self.total_rounds = total_rounds
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -36,12 +35,10 @@ class Server:
 
         # Track historical data for adaptive adjustments
         self.history = {
-            'asr': [],  # Attack Success Rate (Performance Degradation Rate: 1 - clean_accuracy)
             'clean_acc': [],  # Clean accuracy
             'rejection_rates': [],  # Client rejection rates
             'local_accuracies': {}  # Local accuracies per client per round {client_id: [acc1, acc2, ...]}
         }
-        self.initial_accuracy = None  # Store initial accuracy for relative ASR calculation
 
     def register_client(self, client):
         """Register a client to the server."""
@@ -245,38 +242,15 @@ class Server:
 
         clean_accuracy = correct / total if total > 0 else 0
 
-        # Store initial accuracy for relative ASR calculation
-        if self.initial_accuracy is None:
-            self.initial_accuracy = clean_accuracy
-
-        # Evaluate Attack Success Rate (ASR) - Redefined for GRMP attack
-        # For data-agnostic model poisoning attacks, ASR represents performance degradation rate
-        # Option 1: Misclassification rate (1 - clean_accuracy)
-        # This directly reflects the attack's impact on overall model performance
-        attack_success_rate = 1.0 - clean_accuracy
-        
-        # Option 2: Relative performance degradation (uncomment to use instead)
-        # if self.initial_accuracy > 0:
-        #     attack_success_rate = (self.initial_accuracy - clean_accuracy) / self.initial_accuracy
-        # else:
-        #     attack_success_rate = 1.0 - clean_accuracy
-
         # Record historical metrics
-        self.history['asr'].append(attack_success_rate)
         self.history['clean_acc'].append(clean_accuracy)
 
-        return clean_accuracy, attack_success_rate
+        return clean_accuracy
 
     def adaptive_adjustment(self, round_num: int):
         """Adaptively adjust parameters based on historical performance."""
-        if len(self.history['asr']) < 2:
-            return
-
-        # Compute ASR changes
-        asr_change = self.history['asr'][-1] - self.history['asr'][-2]
-        
-        # Adjust server learning rate if ASR fluctuations are too high
         # Fixed server_lr (no adaptive change)
+        pass
 
     def run_round(self, round_num: int) -> Dict:
         """Execute one round of federated learning - stable version."""
@@ -348,7 +322,7 @@ class Server:
         defense_log = self.aggregate_updates(final_update_list, sorted_client_ids)
 
         # Evaluate the global model
-        clean_acc, attack_asr = self.evaluate()
+        clean_acc = self.evaluate()
         
         # Evaluate local accuracies for each client
         local_accs_this_round = {}
@@ -374,7 +348,6 @@ class Server:
         round_log = {
             'round': round_num + 1,
             'clean_accuracy': clean_acc,
-            'attack_success_rate': attack_asr,
             'acc_diff': (abs(clean_acc - self.history['clean_acc'][-2])
                          if len(self.history['clean_acc']) > 1 else 0.0),
             'defense': defense_log,
@@ -395,12 +368,5 @@ class Server:
             delta_best = clean_acc - best_clean
             print(f"  ΔClean vs prev: {delta_prev:+.4f}")
             print(f"  ΔClean vs best: {delta_best:+.4f}")
-        print(f"  Attack Success Rate (ASR): {attack_asr:.4f} (Performance Degradation Rate: {attack_asr:.2%})")
-
-        # Analyze ASR changes
-        if len(self.history['asr']) > 1:
-            asr_change = attack_asr - self.history['asr'][-2]
-            if abs(asr_change) > 0.1:
-                print(f"  ⚠️ ASR Change: {asr_change:+.2%}")
 
         return round_log
