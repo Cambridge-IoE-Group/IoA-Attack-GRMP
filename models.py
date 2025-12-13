@@ -186,16 +186,16 @@ class VGAE(nn.Module):
         
         # Calculate weights for imbalanced classes (edges vs non-edges)
         # Typically graphs are sparse, so we weight positive edges more
-        num_edges = adj_orig.sum()
+        num_edges = adj_orig.sum().item()  # Convert to Python scalar
         num_non_edges = n_nodes * n_nodes - num_edges
         
         # Avoid division by zero
         if num_edges == 0:
             pos_weight = torch.tensor(1.0, device=adj_orig.device)
         else:
-            pos_weight = num_non_edges / num_edges
+            pos_weight = torch.tensor(num_non_edges / num_edges, device=adj_orig.device)
             
-        norm = (n_nodes * n_nodes) / ((num_non_edges) * 2)
+        norm = (n_nodes * n_nodes) / (num_non_edges * 2) if num_non_edges > 0 else 1.0
 
         # 1. Reconstruction Loss (Weighted Binary Cross Entropy)
         bce_loss = norm * F.binary_cross_entropy_with_logits(
