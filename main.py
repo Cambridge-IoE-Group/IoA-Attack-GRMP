@@ -176,19 +176,9 @@ def setup_experiment(config):
                 local_epochs=config['local_epochs'],
                 alpha=config['alpha'],
                 dim_reduction_size=config['dim_reduction_size'],
-                vgae_lambda=config['vgae_lambda'],
                 vgae_epochs=config['vgae_epochs'],
                 vgae_lr=config['vgae_lr'],
-                camouflage_steps=config['camouflage_steps'],
-                camouflage_lr=config['camouflage_lr'],
-                lambda_proximity=config['lambda_proximity'],
-                lambda_aggregation=config['lambda_aggregation'],
                 graph_threshold=config['graph_threshold'],
-                attack_start_round=config['attack_start_round'],
-                lambda_attack=config['lambda_attack'],
-                lambda_camouflage=config['lambda_camouflage'],
-                benign_select_ratio=config['benign_select_ratio'],  # Deprecated: Now using gamma constraint for 0-1 knapsack optimization
-                dual_lr=config['dual_lr'],
                 proxy_step=config['proxy_step'],
                 claimed_data_size=claimed_data_size
             )
@@ -372,17 +362,8 @@ def main():
         'dim_reduction_size': 10000,  # Reduced dimensionality of LLM parameters
         'vgae_epochs': 10,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
-        'vgae_lambda': 2.0,  # Weight for preservation loss - HIGH to preserve poisoned update (float)
         
-        # ========== Camouflage Optimization Parameters ==========
-        'camouflage_steps': 50,  # Number of optimization steps for malicious update camouflage (int)
-        'camouflage_lr': 0.1,  # Learning rate for camouflage optimization (float)
-        'lambda_proximity': 1.0,  # Stronger pull toward global for stealth
-        'lambda_aggregation': 1.0,  # Stronger aggregation-distance constraint
-        'lambda_attack': 1.0,  # Softer attack objective to reduce drift
-        'lambda_camouflage': 0.2,  # Stronger camouflage to mimic benign
-        'benign_select_ratio': 1.0,  # Deprecated: Now using gamma constraint for 0-1 knapsack optimization (kept for backward compatibility)
-        'dual_lr': 0.01,  # Step size for dual variable updates (λ, ρ) in Lagrangian
+        # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
         'attacker_claimed_data_size': 1.5,  # Keep claimed size equal to benign to reduce detectability
         

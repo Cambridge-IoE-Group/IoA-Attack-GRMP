@@ -133,12 +133,8 @@ class AttackerClient(Client):
 
     def __init__(self, client_id: int, model: nn.Module, data_manager,
                  data_indices, lr, local_epochs, alpha,
-                 dim_reduction_size=10000, vgae_lambda=0.5,
-                 vgae_epochs=20, vgae_lr=0.01, camouflage_steps=30, camouflage_lr=0.1,
-                 lambda_proximity=1.0, lambda_aggregation=0.5, graph_threshold=0.5,
-                 attack_start_round=10, lambda_attack=2.0, lambda_camouflage=0.3,
-                 benign_select_ratio=1.0, dual_lr=0.01,
-                 lambda_dual_init=0.0, rho_dual_init=0.0,
+                 dim_reduction_size=10000,
+                 vgae_epochs=20, vgae_lr=0.01, graph_threshold=0.5,
                  proxy_step=0.1,
                  claimed_data_size=1.0):
         """
@@ -153,21 +149,9 @@ class AttackerClient(Client):
             local_epochs: Number of local training epochs per round (must be provided, no default)
             alpha: Proximal regularization coefficient α ∈ [0,1] (must be provided, no default)
             dim_reduction_size: Dimensionality for feature reduction (default: 10000)
-            vgae_lambda: Weight for preservation loss in camouflage (default: 0.5)
             vgae_epochs: Number of epochs for VGAE training (default: 20)
             vgae_lr: Learning rate for VGAE optimizer (default: 0.01)
-            camouflage_steps: Number of optimization steps for camouflage (default: 30)
-            camouflage_lr: Learning rate for camouflage optimization (default: 0.1)
-            lambda_proximity: Weight for constraint (4b) proximity loss (default: 1.0)
-            lambda_aggregation: Weight for constraint (4c) aggregation loss (default: 0.5)
             graph_threshold: Threshold for graph adjacency matrix binarization (default: 0.5)
-            attack_start_round: Round when attack phase starts (default: 10)
-            lambda_attack: Weight for attack objective loss (default: 2.0) - CRITICAL for attack effectiveness
-            lambda_camouflage: Weight for camouflage loss (default: 0.3) - Lower to preserve attack
-            benign_select_ratio: Ratio of benign updates selected for graph (β subset, default: 1.0)
-            dual_lr: Step size for dual variable updates (λ, ρ) in Lagrangian (default: 0.01)
-            lambda_dual_init: Initial dual variable λ for constraint (4b) (default: 0.0)
-            rho_dual_init: Initial dual variable ρ for constraint (4c) (default: 0.0)
             proxy_step: Step size for gradient-free ascent toward global-loss proxy (default: 0.1)
             claimed_data_size: Reported data size D'_j(t) for weighted aggregation (default: 1.0)
         
@@ -178,22 +162,10 @@ class AttackerClient(Client):
         self.data_indices = data_indices
         
         # Store parameters first (before using them)
-        self.attack_start_round = attack_start_round
-        self.vgae_lambda = vgae_lambda
         self.dim_reduction_size = dim_reduction_size
         self.vgae_epochs = vgae_epochs
         self.vgae_lr = vgae_lr
-        self.camouflage_steps = camouflage_steps
-        self.camouflage_lr = camouflage_lr
-        self.lambda_proximity = lambda_proximity
-        self.lambda_aggregation = lambda_aggregation
         self.graph_threshold = graph_threshold
-        self.lambda_attack = lambda_attack  # Weight for attack objective (Formula 4a)
-        self.lambda_camouflage = lambda_camouflage  # Weight for camouflage (reduced to preserve attack)
-        self.benign_select_ratio = benign_select_ratio  # β selection ratio for benign updates
-        self.dual_lr = dual_lr
-        self.lambda_dual = lambda_dual_init  # Dual variable for constraint (4b)
-        self.rho_dual = rho_dual_init      # Dual variable for constraint (4c)
         self.proxy_step = proxy_step
         self.claimed_data_size = claimed_data_size  # For weighted aggregation (paper: D'(t))
 
