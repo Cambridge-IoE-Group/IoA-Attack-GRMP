@@ -816,7 +816,7 @@ class AttackerClient(Client):
                 sel_stack = torch.stack(selected_benign)
                 sel_mean = sel_stack.mean(dim=0)
                 distances = torch.norm(sel_stack - sel_mean, dim=1)
-                agg_dist = distances.sum()
+                agg_dist = distances.sum()  # This returns a scalar tensor (0-dim)
                 constraint_c_violation = F.relu(agg_dist - self.gamma)
             
             # Backpropagate to maximize global loss
@@ -864,7 +864,7 @@ class AttackerClient(Client):
             sel_stack = torch.stack(selected_benign)
             sel_mean = sel_stack.mean(dim=0)
             distances = torch.norm(sel_stack - sel_mean, dim=1)
-            constraint_c_value = distances.sum()
+            constraint_c_value = distances.sum()  # This returns a scalar tensor (0-dim), safe for .item()
         
         malicious_norm = torch.norm(malicious_update).item()
         print(f"    [Attacker {self.client_id}] GRMP Attack: "
