@@ -187,7 +187,7 @@ class AttackerClient(Client):
         self.d_T = None  # Distance threshold for constraint (4b): d(w'_j(t), w_g(t)) ≤ d_T
         self.gamma = None  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         self.global_model_params = None  # Store global model params for constraint (4b)
-        self._flat_numel = self.model.get_flat_params().numel()
+        self._flat_numel = int(self.model.get_flat_params().numel())  # Convert to Python int
 
     def prepare_for_round(self, round_num: int):
         """Prepare for a new training round."""
@@ -313,10 +313,10 @@ class AttackerClient(Client):
         param_dict = {}
         offset = 0
         flat_params = flat_params.view(-1)  # Ensure 1D (O(1), just view change)
-        total_numel = flat_params.numel()
+        total_numel = int(flat_params.numel())  # Convert to Python int
         
         for name, param in self.model.named_parameters():
-            numel = param.numel()
+            numel = int(param.numel())  # Convert to Python int
             if not skip_dim_check and offset + numel > total_numel:
                 # Dimension mismatch: return empty dict to avoid errors
                 print(f"    [Attacker {self.client_id}] Param dict dimension mismatch at {name}: offset {offset} + numel {numel} > total {total_numel}")
@@ -341,7 +341,7 @@ class AttackerClient(Client):
 
         # Ensure shapes match: flatten to 1D and check dimension
         malicious_update = malicious_update.view(-1)  # Flatten to 1D (O(1), just view change)
-        if not skip_dim_check and malicious_update.numel() != self._flat_numel:
+        if not skip_dim_check and int(malicious_update.numel()) != self._flat_numel:
             # Dimension mismatch: return zero loss to avoid errors
             print(f"    [Attacker {self.client_id}] Proxy loss dimension mismatch: got {malicious_update.numel()}, expected {self._flat_numel}")
             return torch.tensor(0.0, device=self.device)
@@ -408,7 +408,9 @@ class AttackerClient(Client):
         adj_matrix.fill_diagonal_(0)
         
         # Threshold for binarization (paper doesn't specify, but common practice)
-        adj_matrix = (adj_matrix > self.graph_threshold).float()
+        # Ensure graph_threshold is a Python float (not tensor)
+        threshold = float(self.graph_threshold) if isinstance(self.graph_threshold, (int, float)) else 0.5
+        adj_matrix = (adj_matrix > threshold).float()
         
         return adj_matrix
 
@@ -528,7 +530,7 @@ class AttackerClient(Client):
         Returns:
             Malicious update generated using GSP (reduced dimension M, or None if failed)
         """
-        M = feature_matrix.shape[1]  # Reduced dimension
+        M = int(feature_matrix.shape[1])  # Reduced dimension - Convert to Python int
         
         # Step 1: Compute Laplacian of original graph
         # L = diag(A·1) - A
@@ -582,16 +584,23 @@ class AttackerClient(Client):
         # Select a vector from F̂ as the malicious update
         # Use client_id to select different vectors for different attackers (for diversity)
         # This ensures different attackers use different malicious models from F̂
-        select_idx = self.client_id % F_recon_rows
-        gsp_attack = F_recon[select_idx]  # Select one row from F̂ as w'_j(t)
+        select_idx = int(self.client_id % F_recon_rows)  # Ensure Python int
+        gsp_attack = F_recon[select_idx].clone()  # Select one row from F̂ as w'_j(t), clone to avoid view issues
         
         # Ensure gsp_attack is 1D tensor (not scalar)
-        if gsp_attack.dim() == 0:
+        gsp_dim_count = int(gsp_attack.dim())  # Convert to Python int
+        if gsp_dim_count == 0:
             # Scalar tensor: expand to 1D
             gsp_attack = gsp_attack.unsqueeze(0)
-        elif gsp_attack.dim() > 1:
+        elif gsp_dim_count > 1:
             # Multi-dimensional: flatten
             gsp_attack = gsp_attack.flatten()
+        
+        # Final check: ensure it's a 1D tensor with correct size
+        if gsp_attack.numel() != M:
+            # Size mismatch: create zeros with correct size
+            print(f"    [Attacker {self.client_id}] GSP attack size mismatch: got {gsp_attack.numel()}, expected {M}, using zeros")
+            gsp_attack = torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         return gsp_attack
 
@@ -632,8 +641,8 @@ class AttackerClient(Client):
         
         # Reduce dimensionality for computational efficiency
         reduced_benign = self._get_reduced_features(selected_benign, fix_indices=False)  # (I, M)
-        M = reduced_benign.shape[1]
-        I = reduced_benign.shape[0]
+        M = int(reduced_benign.shape[1])  # Convert to Python int
+        I = int(reduced_benign.shape[0])  # Convert to Python int
         
         # ============================================================
         # STEP 2: Construct adjacency matrix A ∈ R^{M×M}
@@ -663,12 +672,15 @@ class AttackerClient(Client):
         malicious_update = torch.zeros_like(poisoned_update)
         total_dim = int(malicious_update.shape[0])  # Convert to Python int
         
-        if gsp_attack_reduced is not None:
+        # _gsp_generate_malicious always returns a tensor (never None)
+        # But check if it's valid
+        if gsp_attack_reduced is not None and isinstance(gsp_attack_reduced, torch.Tensor):
             # Ensure gsp_attack_reduced is 1D tensor
-            if gsp_attack_reduced.dim() == 0:
+            gsp_dim_count = int(gsp_attack_reduced.dim())  # Convert to Python int
+            if gsp_dim_count == 0:
                 # Scalar tensor: expand to 1D
                 gsp_attack_reduced = gsp_attack_reduced.unsqueeze(0)
-            elif gsp_attack_reduced.dim() > 1:
+            elif gsp_dim_count > 1:
                 # Multi-dimensional: flatten
                 gsp_attack_reduced = gsp_attack_reduced.flatten()
             
@@ -724,7 +736,7 @@ class AttackerClient(Client):
         
         # Check dimension once before loop (performance optimization)
         proxy_param_flat = proxy_param.view(-1)
-        dim_valid = proxy_param_flat.numel() == self._flat_numel
+        dim_valid = int(proxy_param_flat.numel()) == self._flat_numel
         
         for step in range(proxy_steps):
             proxy_opt.zero_grad()
