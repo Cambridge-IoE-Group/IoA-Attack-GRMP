@@ -1,5 +1,5 @@
 # server.py
-# server.py This module implements the Server class for federated learning, including model aggregation and defense mechanisms against GRMP attacks.
+# This module implements the Server class for federated learning, including model aggregation and defense mechanisms against GRMP attacks.
 
 import torch
 import torch.nn as nn
@@ -220,8 +220,13 @@ class Server:
         
         return correct / total if total > 0 else 0.0
     
-    def evaluate(self) -> Tuple[float, float]:
-        """Evaluate the global model's performance."""
+    def evaluate(self) -> float:
+        """
+        Evaluate the global model's performance.
+        
+        Returns:
+            Clean accuracy (float) on the test set
+        """
         self.global_model.eval()
 
         # Evaluate clean accuracy

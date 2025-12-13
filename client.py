@@ -1,5 +1,5 @@
 # client.py
-# client.py provides the Client class for federated learning clients, including benign and attacker clients.
+# Provides the Client class for federated learning clients, including benign and attacker clients.
 
 import torch
 import torch.nn as nn
@@ -51,7 +51,15 @@ class Client:
         self.current_round = round_num
 
     def get_model_update(self, initial_params: torch.Tensor) -> torch.Tensor:
-        """Calculate the model update (Current - Initial)."""
+        """
+        Calculate the model update (Current - Initial).
+        
+        Args:
+            initial_params: Initial model parameters (flattened)
+            
+        Returns:
+            Model update tensor (flattened)
+        """
         current_params = self.model.get_flat_params()
         return current_params - initial_params
 
@@ -214,7 +222,7 @@ class AttackerClient(Client):
         
         Note: Since we want to minimize the sum and the constraint is also on the sum,
         the optimal solution is to select as many items as possible while staying within capacity.
-        We use dynamic programming to find the optimal selection.
+        We use a greedy approach to find an approximate optimal selection.
         """
         if not self.benign_updates:
             return []
@@ -335,15 +343,22 @@ class AttackerClient(Client):
         """
         Helper function to reduce dimensionality of updates.
         Randomly selects indices to slice the high-dimensional vector.
+        
+        Args:
+            updates: List of update tensors to reduce
+            fix_indices: If True, reuse existing feature_indices; if False, generate new ones
+            
+        Returns:
+            Stacked reduced features tensor of shape (I, M) where I=num_updates, M=dim_reduction_size
         """
         stacked_updates = torch.stack(updates)
         total_dim = int(stacked_updates.shape[1])  # Convert to Python int
         
-        # 如果更新维度小于降维目标，则不降维
+        # If update dimension is smaller than reduction target, skip reduction
         if total_dim <= self.dim_reduction_size:
             return stacked_updates
             
-        # 每一轮攻击开始时，固定一组特征索引，保证这一轮内的训练一致性
+        # Fix feature indices at the start of each attack round to ensure training consistency within the round
         if self.feature_indices is None or not fix_indices:
             # Randomly select indices
             self.feature_indices = torch.randperm(total_dim)[:self.dim_reduction_size].to(self.device)
@@ -426,7 +441,7 @@ class AttackerClient(Client):
 
         return total_loss / batches
 
-    def _construct_graph(self, reduced_features: torch.Tensor):
+    def _construct_graph(self, reduced_features: torch.Tensor) -> torch.Tensor:
         """
         Construct graph according to the paper (Section III).
         
@@ -438,6 +453,12 @@ class AttackerClient(Client):
         
         So we need to compute similarity between COLUMNS (parameter dimensions),
         not ROWS (clients).
+        
+        Args:
+            reduced_features: Feature matrix F(t) ∈ R^{I×M} where I=num_clients, M=feature_dim
+            
+        Returns:
+            Adjacency matrix A(t) ∈ R^{M×M} with binary edges based on cosine similarity threshold
         """
         # reduced_features shape: (I, M) where I=num_clients, M=feature_dim
         # We need to compute similarity between columns (parameter dimensions)
@@ -464,7 +485,7 @@ class AttackerClient(Client):
         
         return adj_matrix
 
-    def _train_vgae(self, adj_matrix: torch.Tensor, feature_matrix: torch.Tensor, epochs=None):
+    def _train_vgae(self, adj_matrix: torch.Tensor, feature_matrix: torch.Tensor, epochs=None) -> torch.Tensor:
         """
         Train the VGAE model according to the paper.
         
@@ -473,6 +494,14 @@ class AttackerClient(Client):
         - For VGAE, we use F^T ∈ R^{M×I} as node features
         - Each node represents a parameter dimension
         - VGAE learns to reconstruct A
+        
+        Args:
+            adj_matrix: Adjacency matrix A ∈ R^{M×M}
+            feature_matrix: Feature matrix F ∈ R^{I×M}
+            epochs: Number of training epochs (default: self.vgae_epochs)
+            
+        Returns:
+            Reconstructed adjacency matrix Â ∈ R^{M×M} (detached)
         """
         if epochs is None:
             epochs = self.vgae_epochs
