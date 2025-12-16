@@ -109,7 +109,7 @@ def setup_experiment(config):
             print(f"    Client {client_id} ({client_type}): {total} samples ({dist_str})")
         else:
             client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
-            print(f"    Client {client_id} ({client_type}): 0 samples ⚠️ WARNING: No data assigned!")
+            print(f"    Client {client_id} ({client_type}): 0 samples WARNING: No data assigned!")
 
     # 3. Get global test loader
     test_loader = data_manager.get_test_loader()
@@ -178,7 +178,7 @@ def setup_experiment(config):
             else:
                 # Override with config value (for attack experiments)
                 claimed_data_size = config_claimed
-                print(f"    ⚠️  Override: Claimed data size D'_j(t): {claimed_data_size} (actual: {actual_data_size})")
+                print(f"    WARNING: Override: Claimed data size D'_j(t): {claimed_data_size} (actual: {actual_data_size})")
             
             client = AttackerClient(
                 client_id=client_id,
@@ -290,9 +290,9 @@ def run_experiment(config):
                     baseline_data = json.load(f)
                     baseline_local_accs = baseline_data.get('local_accuracies', None)
                     if baseline_local_accs:
-                        print("  ✅ Found baseline experiment data for Figure 5")
+                        print("  Found baseline experiment data for Figure 5")
             except Exception as e:
-                print(f"  ⚠️  Could not load baseline data: {e}")
+                print(f"  WARNING: Could not load baseline data: {e}")
         
         visualizer.generate_all_figures(
             server_log_data=server.log_data,
@@ -328,7 +328,7 @@ def analyze_results(metrics):
 def run_no_attack_experiment(config_base: Dict) -> Dict:
     """
     Run a baseline experiment WITHOUT any attackers (for Figure 5 comparison).
-    
+        
     Args:
         config_base: Base configuration dictionary
         
@@ -338,11 +338,20 @@ def run_no_attack_experiment(config_base: Dict) -> Dict:
     # Create a copy of config with no attackers
     config = config_base.copy()
     config['experiment_name'] = config_base.get('experiment_name', 'baseline') + '_no_attack'
+    num_benign_in_attack = config_base['num_clients'] - config_base.get('num_attackers', 0)
+    if 'num_benign_clients' in config_base and config_base['num_benign_clients'] is not None:
+        config['num_clients'] = config_base['num_benign_clients']
+    else:
+        config['num_clients'] = num_benign_in_attack
+    
     config['num_attackers'] = 0  # No attackers
+    
     print("\n" + "=" * 60)
     print("Running BASELINE Experiment (NO ATTACK)")
     print("=" * 60)
-    print("This experiment will be used for Figure 5 comparison.")
+    print(f"Baseline will use {config['num_clients']} benign clients")
+    print(f"(matching {num_benign_in_attack} benign clients in attack experiment)")
+    print("This ensures fair comparison by controlling variables.")
     print("=" * 60)
     
     return run_experiment(config)
@@ -357,6 +366,9 @@ def main():
         # ========== Federated Learning Setup ==========
         'num_clients': 6,  # Total number of federated learning clients (int)
         'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
+        'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
+                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
+                                     # If set, baseline experiment will use exactly this many benign clients
         'num_rounds': 50,  # Total number of federated learning rounds (int)
         
         # ========== Training Hyperparameters ==========
@@ -477,7 +489,7 @@ def main():
                     baseline_local_accs = baseline_data.get('local_accuracies', {})
                     
                     # Generate Figure 5 from baseline
-                    print("\n📊 Generating Figure 5: Local Accuracy (No Attack)...")
+                    print("\nGenerating Figure 5: Local Accuracy (No Attack)...")
                     baseline_rounds = list(range(1, len(baseline_results) + 1))
                     visualizer.plot_figure5_local_accuracy_no_attack(
                         baseline_local_accs, baseline_rounds,
