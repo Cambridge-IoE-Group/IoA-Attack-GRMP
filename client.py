@@ -987,11 +987,11 @@ class AttackerClient(Client):
                             # Return zero loss as last resort
                             return torch.tensor(0.0, device=target_device)
 
-            ce_loss = F.cross_entropy(logits, labels)
-            total_loss = total_loss + ce_loss
-            batches += 1
-            if batches >= max_batches:
-                break
+                ce_loss = F.cross_entropy(logits, labels)
+                total_loss = total_loss + ce_loss
+                batches += 1
+                if batches >= max_batches:
+                    break
 
             if batches == 0:
                 result = torch.tensor(0.0, device=self.device)
@@ -1361,7 +1361,7 @@ class AttackerClient(Client):
         # Create malicious_update on CPU to save GPU memory
         # poisoned_update is likely on CPU, but ensure we create on CPU
         if poisoned_update.device.type == 'cuda':
-        malicious_update = torch.zeros_like(poisoned_update)
+            malicious_update = torch.zeros_like(poisoned_update)
         else:
             malicious_update = torch.zeros_like(poisoned_update, device='cpu')
         total_dim = int(malicious_update.shape[0])  # Convert to Python int
@@ -1403,7 +1403,7 @@ class AttackerClient(Client):
                     if gsp_attack_reduced.device.type == 'cuda':
                         malicious_update = gsp_attack_reduced.cpu()
                     else:
-                    malicious_update = gsp_attack_reduced
+                        malicious_update = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {total_dim}, using zeros")
