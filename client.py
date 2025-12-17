@@ -622,7 +622,20 @@ class AttackerClient(Client):
         # Move model to GPU temporarily for proxy loss calculation
         model_was_on_cpu = not self._model_on_gpu
         if model_was_on_cpu:
+            # Move entire model to device (including all parameters and buffers)
+            # For PEFT models, this should move base model, LoRA parameters, and all buffers
             self.model.to(self.device)
+            # Defensive check: Ensure all parameters and buffers are actually on the device
+            # This is critical for PEFT models where nested structures might not move correctly
+            # Check parameters
+            for param in self.model.parameters():
+                if param.device != self.device:
+                    # Force move if not on correct device (shouldn't happen, but safety check)
+                    param.data = param.data.to(self.device)
+            # Check buffers (e.g., batch norm running stats)
+            for buffer in self.model.buffers():
+                if buffer.device != self.device:
+                    buffer.data = buffer.data.to(self.device)
             self._model_on_gpu = True
 
         try:
@@ -656,11 +669,39 @@ class AttackerClient(Client):
                     # Fallback: temporarily set parameters, run forward, then restore
                     original_params = {}
                     try:
-                        # Save original parameters
+                        # First, ensure entire model is on correct device (defensive check)
+                        # This is critical for PEFT models where base model params might not be properly moved
+                        self.model.to(self.device)
+                        
+                        # Save original parameters and set new values
+                        # Critical: Ensure all parameters are on the correct device before setting
                         for name, param in self.model.named_parameters():
                             if name in param_dict:
+                                # Save original parameter value (on current device)
                                 original_params[name] = param.data.clone()
-                                param.data.copy_(param_dict[name])
+                                # Get new parameter value from param_dict
+                                new_value = param_dict[name]
+                                # Ensure new_value is on the same device as param
+                                # This is critical for PEFT models where base model params may be on different devices
+                                if new_value.device != param.device:
+                                    new_value = new_value.to(param.device)
+                                # Ensure data type matches
+                                if new_value.dtype != param.dtype:
+                                    new_value = new_value.to(dtype=param.dtype)
+                                # Copy the value
+                                param.data.copy_(new_value)
+                        
+                        # Final verification: ensure all parameters and buffers are on correct device
+                        # This is especially important for PEFT models with nested structures
+                        # Parameters
+                        for param in self.model.parameters():
+                            if param.device != self.device:
+                                # This shouldn't happen, but if it does, log a warning
+                                print(f"    [Attacker {self.client_id}] Warning: Parameter on {param.device}, moving to {self.device}")
+                        # Buffers (e.g., batch norm running stats, etc.)
+                        for buffer in self.model.buffers():
+                            if buffer.device != self.device:
+                                buffer.data = buffer.data.to(self.device)
                         
                         # Run forward pass
                         # NewsClassifierModel.forward() returns logits directly
@@ -669,7 +710,11 @@ class AttackerClient(Client):
                         # Restore original parameters
                         for name, param in self.model.named_parameters():
                             if name in original_params:
-                                param.data.copy_(original_params[name])
+                                # Ensure restored value is on correct device
+                                restored_value = original_params[name]
+                                if restored_value.device != param.device:
+                                    restored_value = restored_value.to(param.device)
+                                param.data.copy_(restored_value)
                     except Exception as fallback_error:
                         print(f"    [Attacker {self.client_id}] Fallback method also failed: {fallback_error}")
                         # Return zero loss as last resort
