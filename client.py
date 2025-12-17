@@ -567,6 +567,11 @@ class AttackerClient(Client):
             # should already be correct, but we verify compatibility.
             param_value = flat_params[offset:offset + numel].view_as(param)
             
+            # Ensure param_value is on the same device as param
+            # This is important when model is on GPU but flat_params might be on different device
+            if param_value.device != param.device:
+                param_value = param_value.to(param.device)
+            
             # Handle PEFT model parameter names (base_model.model.* format)
             # stateless.functional_call should work with the names as-is from named_parameters()
             # But if we're working with a PEFT-wrapped model, ensure the name is correct
@@ -1064,7 +1069,12 @@ class AttackerClient(Client):
                 expected_dim = len(self.feature_indices)
                 if gsp_dim == expected_dim:
                     # Correct dimension: expand back to full dimension
-                    malicious_update[self.feature_indices] = gsp_attack_reduced
+                    # Ensure gsp_attack_reduced is on CPU to match malicious_update
+                    if gsp_attack_reduced.device.type == 'cuda':
+                        gsp_attack_reduced = gsp_attack_reduced.cpu()
+                    # Ensure feature_indices is on CPU for indexing
+                    feature_indices_cpu = self.feature_indices.cpu() if self.feature_indices.device.type == 'cuda' else self.feature_indices
+                    malicious_update[feature_indices_cpu] = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {expected_dim}, using zeros")
@@ -1072,7 +1082,11 @@ class AttackerClient(Client):
                 # No dimension reduction: GSP attack should be full dimension
                 if gsp_dim == total_dim:
                     # Correct dimension: use directly
-                    malicious_update = gsp_attack_reduced
+                    # Ensure gsp_attack_reduced is on CPU to match malicious_update
+                    if gsp_attack_reduced.device.type == 'cuda':
+                        malicious_update = gsp_attack_reduced.cpu()
+                    else:
+                        malicious_update = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {total_dim}, using zeros")
