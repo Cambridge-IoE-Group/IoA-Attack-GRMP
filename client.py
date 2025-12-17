@@ -112,7 +112,7 @@ class BenignClient(Client):
         """Perform local training - includes proximal regularization."""
         if epochs is None:
             epochs = self.local_epochs
-        
+            
         # Move model to GPU for training
         if not self._model_on_gpu:
             self.model.to(self.device)
@@ -122,7 +122,7 @@ class BenignClient(Client):
             if self.optimizer is None:
                 trainable_params = [p for p in self.model.parameters() if p.requires_grad]
                 self.optimizer = optim.Adam(trainable_params, lr=self.lr)
-        
+            
         self.model.train()
         # Get initial params and move to CPU to save GPU memory
         initial_params = self.model.get_flat_params().clone().cpu()
@@ -655,7 +655,7 @@ class AttackerClient(Client):
             self._ensure_model_on_device(child, target_device)
 
     def _proxy_global_loss(self, malicious_update: torch.Tensor, max_batches: int = 1, 
-                           skip_dim_check: bool = False) -> torch.Tensor:
+                           skip_dim_check: bool = False, keep_model_on_gpu: bool = False) -> torch.Tensor:
         """
         Differentiable proxy for F(w'_g): cross-entropy on a small clean subset,
         using stateless.functional_call with (w_g + malicious_update).
@@ -664,8 +664,12 @@ class AttackerClient(Client):
             malicious_update: Update vector to evaluate (can be on CPU or GPU)
             max_batches: Maximum number of batches to process
             skip_dim_check: If True, skip dimension check (for performance in loops)
+            keep_model_on_gpu: If True, model will NOT be moved back to CPU after computation.
+                              This is critical when the returned loss will be used for backward pass.
         
-        Note: Model will be temporarily moved to GPU for computation, then moved back to CPU.
+        Note: 
+            - If keep_model_on_gpu=False: Model will be temporarily moved to GPU, then moved back to CPU.
+            - If keep_model_on_gpu=True: Model stays on GPU (important for backward pass in optimization loops).
         """
         if self.global_model_params is None or self.proxy_loader is None:
             return torch.tensor(0.0, device=self.device)
@@ -676,7 +680,7 @@ class AttackerClient(Client):
         # Ensure malicious_update is on GPU for computation
         if malicious_update.device.type != 'cuda':
             malicious_update = malicious_update.to(target_device)
-        
+
         # Ensure shapes match: flatten to 1D and check dimension
         malicious_update = malicious_update.view(-1)  # Flatten to 1D (O(1), just view change)
         if not skip_dim_check and int(malicious_update.numel()) != self._flat_numel:
@@ -714,7 +718,14 @@ class AttackerClient(Client):
             self._model_on_gpu = True
 
         try:
-            candidate_params = self.global_model_params + malicious_update
+            # CRITICAL: Ensure global_model_params and malicious_update are on the same device
+            # Both should be on target_device for proper computation
+            if not self._device_matches(self.global_model_params.device, target_device):
+                global_params_gpu = self.global_model_params.to(target_device)
+            else:
+                global_params_gpu = self.global_model_params
+            
+            candidate_params = global_params_gpu + malicious_update
             # Skip dimension check if already validated (performance optimization)
             param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
             
@@ -743,7 +754,7 @@ class AttackerClient(Client):
 
             # Normalize device once for this batch loop
             target_device = torch.device('cuda:0') if self.device.type == 'cuda' else self.device
-            
+
             for batch in self.proxy_loader:
                 input_ids = batch['input_ids'].to(target_device)
                 attention_mask = batch['attention_mask'].to(target_device)
@@ -794,9 +805,30 @@ class AttackerClient(Client):
                                     param.data.copy_(new_value)
                         
                         # Final check: ensure all parameters are still on correct device after setting
+                        # CRITICAL: This must be done before forward pass to avoid device mismatch in backward
+                        # Use multiple methods to ensure everything is on GPU
+                        self.model.to(target_device)  # Force move model to GPU
+                        self._ensure_model_on_device(self.model, target_device)  # Recursive check
+                        
+                        # One final verification before forward pass
+                        # Check ALL parameters (including base model params in LoRA mode)
+                        # This is critical for LoRA models where base model params might not be moved correctly
+                        for name, param in self.model.named_parameters():
+                            if not self._device_matches(param.device, target_device):
+                                print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Parameter {name} on {param.device}, fixing...")
+                                with torch.no_grad():
+                                    param.data = param.data.to(target_device, non_blocking=True)
+                        for name, buffer in self.model.named_buffers():
+                            if not self._device_matches(buffer.device, target_device):
+                                print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Buffer {name} on {buffer.device}, fixing...")
+                                buffer.data = buffer.data.to(target_device, non_blocking=True)
+                        
+                        # One more recursive check after fixing individual parameters
                         self._ensure_model_on_device(self.model, target_device)
                         
                         # Run forward pass
+                        # CRITICAL: All parameters and buffers MUST be on target_device at this point
+                        # The computation graph created here will be used for backward, so device consistency is essential
                         logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
                         
                         # Restore original parameters
@@ -827,7 +859,7 @@ class AttackerClient(Client):
                         # Final verification before calling stateless.functional_call
                         self._ensure_model_on_device(self.model, target_device)
                         self.model.to(target_device)
-                        
+
                         logits = stateless.functional_call(
                             self.model,
                             param_dict,
@@ -955,19 +987,24 @@ class AttackerClient(Client):
                             # Return zero loss as last resort
                             return torch.tensor(0.0, device=target_device)
 
-                ce_loss = F.cross_entropy(logits, labels)
-                total_loss = total_loss + ce_loss
-                batches += 1
-                if batches >= max_batches:
-                    break
+            ce_loss = F.cross_entropy(logits, labels)
+            total_loss = total_loss + ce_loss
+            batches += 1
+            if batches >= max_batches:
+                break
 
             if batches == 0:
                 result = torch.tensor(0.0, device=self.device)
             else:
                 result = total_loss / batches
         finally:
-            # Move model back to CPU to free GPU memory
-            if model_was_on_cpu:
+            # CRITICAL: Only move model back to CPU if keep_model_on_gpu=False
+            # If keep_model_on_gpu=True, the loss will be used for backward pass,
+            # and moving the model would break the computation graph!
+            if not keep_model_on_gpu and model_was_on_cpu:
+                # Before moving back, ensure all gradients are computed if needed
+                # Actually, if keep_model_on_gpu is False, we assume backward is not needed
+                # So it's safe to move back
                 self.model.cpu()
                 self._model_on_gpu = False
 
@@ -1324,7 +1361,7 @@ class AttackerClient(Client):
         # Create malicious_update on CPU to save GPU memory
         # poisoned_update is likely on CPU, but ensure we create on CPU
         if poisoned_update.device.type == 'cuda':
-            malicious_update = torch.zeros_like(poisoned_update)
+        malicious_update = torch.zeros_like(poisoned_update)
         else:
             malicious_update = torch.zeros_like(poisoned_update, device='cpu')
         total_dim = int(malicious_update.shape[0])  # Convert to Python int
@@ -1366,7 +1403,7 @@ class AttackerClient(Client):
                     if gsp_attack_reduced.device.type == 'cuda':
                         malicious_update = gsp_attack_reduced.cpu()
                     else:
-                        malicious_update = gsp_attack_reduced
+                    malicious_update = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {total_dim}, using zeros")
@@ -1411,16 +1448,38 @@ class AttackerClient(Client):
         proxy_param_flat = proxy_param.view(-1)
         dim_valid = int(proxy_param_flat.numel()) == self._flat_numel
         
+        # CRITICAL: Ensure model is on GPU before optimization loop
+        # Model must stay on GPU during the entire optimization loop to maintain computation graph
+        target_device = torch.device('cuda:0') if self.device.type == 'cuda' else self.device
+        if not self._model_on_gpu:
+            self.model.to(target_device)
+            self._ensure_model_on_device(self.model, target_device)
+            self._model_on_gpu = True
+        
         for step in range(self.proxy_steps):
             proxy_opt.zero_grad()
+            
+            # CRITICAL: Before each forward pass, ensure model is still on GPU
+            # Verify all parameters are on correct device
+            self._ensure_model_on_device(self.model, target_device)
             
             # Attack objective: Maximize F(w'_g(t)) according to paper Formula 4a
             # We use proxy loss as approximation of F(w'_g(t))
             # Use optimization max_batches for fast but accurate gradient estimation
-            global_loss = self._proxy_global_loss(proxy_param, max_batches=self.proxy_max_batches_opt, skip_dim_check=dim_valid)
+            # CRITICAL: keep_model_on_gpu=True ensures model stays on GPU for backward pass
+            global_loss = self._proxy_global_loss(
+                proxy_param, 
+                max_batches=self.proxy_max_batches_opt, 
+                skip_dim_check=dim_valid,
+                keep_model_on_gpu=True  # Keep model on GPU for backward pass
+            )
             
             # Objective: maximize global_loss => minimize -global_loss
             objective = -global_loss
+            
+            # CRITICAL: Before backward, ensure all model parameters are still on GPU
+            # This is essential for LoRA models where base model params might have been moved
+            self._ensure_model_on_device(self.model, target_device)
             
             # Compute constraint violations for logging (not used in optimization)
             constraint_b_violation = torch.tensor(0.0, device=self.device)
@@ -1446,6 +1505,29 @@ class AttackerClient(Client):
                 # Clean up GPU references
                 del sel_benign_gpu, sel_stack, sel_mean, distances
             
+            # CRITICAL: Before backward pass, ensure ALL model parameters and buffers are on GPU
+            # This is essential for LoRA models where nested structures might have been affected
+            # The computation graph created during forward pass references these parameters
+            # If any parameter is on CPU during backward, we'll get a device mismatch error
+            device_mismatch_before_backward = False
+            for name, param in self.model.named_parameters():
+                if not self._device_matches(param.device, target_device):
+                    print(f"    [Attacker {self.client_id}] CRITICAL PRE-BACKWARD: Parameter {name} on {param.device}, forcing to {target_device}")
+                    with torch.no_grad():
+                        param.data = param.data.to(target_device, non_blocking=True)
+                    device_mismatch_before_backward = True
+            for name, buffer in self.model.named_buffers():
+                if not self._device_matches(buffer.device, target_device):
+                    print(f"    [Attacker {self.client_id}] CRITICAL PRE-BACKWARD: Buffer {name} on {buffer.device}, forcing to {target_device}")
+                    buffer.data = buffer.data.to(target_device, non_blocking=True)
+                    device_mismatch_before_backward = True
+            if device_mismatch_before_backward:
+                print(f"    [Attacker {self.client_id}] WARNING: Fixed device mismatches before backward pass")
+                # Final recursive check to ensure everything is consistent
+                self._ensure_model_on_device(self.model, target_device)
+                # One more model.to() to be absolutely sure
+                self.model.to(target_device)
+            
             # Backpropagate to maximize global loss
             objective.backward()
             
@@ -1463,6 +1545,13 @@ class AttackerClient(Client):
                     proxy_param.data = proxy_param.data * (self.d_T / dist_to_global)
         
         malicious_update = proxy_param.detach()
+        
+        # CRITICAL: Now that optimization is complete, move model back to CPU to free GPU memory
+        # The computation graph is no longer needed after optimization
+        if self._model_on_gpu:
+            self.model.cpu()
+            self._ensure_model_on_device(self.model, torch.device('cpu'))
+            self._model_on_gpu = False
         
         # Clean up optimizer to free GPU memory
         del proxy_opt

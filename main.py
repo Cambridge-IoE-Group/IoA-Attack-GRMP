@@ -463,20 +463,12 @@ def main():
         
         # ========== Visualization ==========
         'generate_plots': True,  # Whether to generate visualization plots (bool)
-        'run_both_experiments': False,  # Set to True to run baseline + attack (for Figure 5)
-        'run_attack_only': False,  # Set to True to only run attack experiment
+        'run_both_experiments': False,  # Set to True to run baseline + attack (for Figure 5 comparison)
     }
 
-
-
-    # Option 1: Run attack experiment only
-    if config.get('run_attack_only', False):
-        print("Running GRMP Attack with VGAE...")
-        results, metrics = run_experiment(config)
-        analyze_results(metrics)
-    
-    # Option 2: Run both baseline (no attack) and attack experiments
-    elif config.get('run_both_experiments', False):
+    # Run experiments based on configuration
+    if config.get('run_both_experiments', False):
+        # Run both baseline (no attack) and attack experiments for comparison
         print("\n" + "=" * 60)
         print("Running COMPLETE Experiment Suite")
         print("=" * 60)
@@ -485,26 +477,33 @@ def main():
         print("  2. Attack experiment (with GRMP) - for Figures 3, 4, 6")
         print("=" * 60)
         
-        # Run baseline (no attack) experiment
+        # Run baseline (no attack) experiment first
+        print("\n" + "=" * 60)
+        print("Step 1: Running BASELINE Experiment (NO ATTACK)")
+        print("=" * 60)
         baseline_results, baseline_metrics = run_no_attack_experiment(config)
+        analyze_results(baseline_metrics)
         
         # Run attack experiment
         print("\n" + "=" * 60)
-        print("Now running ATTACK experiment...")
+        print("Step 2: Running ATTACK Experiment (with GRMP)")
         print("=" * 60)
+        # Temporarily disable plot generation in run_experiment to avoid duplicate generation
+        # We'll generate all plots at the end with baseline data available
+        plot_setting = config.get('generate_plots', True)
+        config['generate_plots'] = False  # Disable plots in individual run
         attack_results, attack_metrics = run_experiment(config)
+        config['generate_plots'] = plot_setting  # Restore original setting
         
-        # Generate combined visualizations
-        if config.get('generate_plots', True):
+        # Generate combined visualizations with baseline data available
+        if plot_setting:
             from visualization import ExperimentVisualizer
             from pathlib import Path
             
             results_dir = Path("results")
             visualizer = ExperimentVisualizer(results_dir=results_dir)
             
-            # Extract attacker IDs from attack experiment
-            # (We need to reload the server or pass it differently)
-            # For now, we'll use the config to determine attackers
+            # Calculate attacker IDs from config
             num_clients = config['num_clients']
             num_attackers = config['num_attackers']
             attacker_ids = list(range(num_clients - num_attackers, num_clients))
@@ -515,47 +514,65 @@ def main():
             
             # Load baseline results for Figure 5
             baseline_path = results_dir / f"{config['experiment_name']}_no_attack_results.json"
+            baseline_local_accs = None
             if baseline_path.exists():
-                with open(baseline_path, 'r') as f:
-                    baseline_data = json.load(f)
-                    baseline_local_accs = baseline_data.get('local_accuracies', {})
-                    
-                    # Generate Figure 5 from baseline
-                    print("\nGenerating Figure 5: Local Accuracy (No Attack)...")
-                    baseline_rounds = list(range(1, len(baseline_results) + 1))
-                    visualizer.plot_figure5_local_accuracy_no_attack(
-                        baseline_local_accs, baseline_rounds,
-                        save_path=results_dir / f"{config['experiment_name']}_figure5.png"
-                    )
+                try:
+                    with open(baseline_path, 'r') as f:
+                        baseline_data = json.load(f)
+                        baseline_local_accs = baseline_data.get('local_accuracies', None)
+                        if baseline_local_accs:
+                            print("  ✓ Found baseline experiment data for Figure 5")
+                            # Generate Figure 5 from baseline
+                            baseline_rounds = list(range(1, len(baseline_results) + 1))
+                            visualizer.plot_figure5_local_accuracy_no_attack(
+                                baseline_local_accs, baseline_rounds,
+                                save_path=results_dir / f"{config['experiment_name']}_figure5.png"
+                            )
+                except Exception as e:
+                    print(f"  ⚠️  WARNING: Could not load baseline data: {e}")
             
-            # Generate attack experiment figures (3, 4, 6)
-            # Note: We need server object to get local_accuracies, so we'll regenerate
-            # For now, load from saved results
+            # Load attack experiment results for Figures 3, 4, 6
             attack_path = results_dir / f"{config['experiment_name']}_results.json"
+            attack_local_accs = None
             if attack_path.exists():
-                with open(attack_path, 'r') as f:
-                    attack_data = json.load(f)
-                    attack_local_accs = attack_data.get('local_accuracies', {})
-                    
-                    # Generate Figures 3, 4, 6
-                    visualizer.generate_all_figures(
-                        server_log_data=attack_results,
-                        local_accuracies=attack_local_accs,
-                        attacker_ids=attacker_ids,
-                        experiment_name=config['experiment_name']
-                    )
+                try:
+                    with open(attack_path, 'r') as f:
+                        attack_data = json.load(f)
+                        attack_local_accs = attack_data.get('local_accuracies', None)
+                        if attack_local_accs:
+                            print("  ✓ Found attack experiment data")
+                except Exception as e:
+                    print(f"  ⚠️  WARNING: Could not load attack data: {e}")
+            
+            # Generate Figures 3, 4, 6 with baseline data if available
+            if attack_local_accs:
+                visualizer.generate_all_figures(
+                    server_log_data=attack_results,
+                    local_accuracies=attack_local_accs,
+                    attacker_ids=attacker_ids,
+                    experiment_name=config['experiment_name'],
+                    baseline_local_accuracies=baseline_local_accs,
+                    num_rounds=config['num_rounds'],
+                    attack_start_round=config['attack_start_round']
+                )
         
         analyze_results(attack_metrics)
+        print("\n" + "=" * 60)
+        print("Experiment Suite Complete!")
+        print("=" * 60)
     
-    # Option 3: Default - run attack experiment only
     else:
-        print("Running GRMP Attack with VGAE...")
+        # Default: Run single experiment (attack if num_attackers > 0, baseline if num_attackers == 0)
+        if config.get('num_attackers', 0) > 0:
+            print("Running GRMP Attack with VGAE...")
+        else:
+            print("Running Baseline Experiment (No Attack)...")
+        
         results, metrics = run_experiment(config)
         analyze_results(metrics)
         
-        # Note: Figure 5 requires a separate baseline experiment
-        # Set 'run_both_experiments': True to generate all figures
-        if config.get('generate_plots', True):
+        # Note about Figure 5 if running attack-only
+        if config.get('num_attackers', 0) > 0 and config.get('generate_plots', True):
             print("\n" + "=" * 60)
             print("NOTE: Figure 5 (No Attack) requires a baseline experiment.")
             print("To generate Figure 5, set 'run_both_experiments': True in config")
