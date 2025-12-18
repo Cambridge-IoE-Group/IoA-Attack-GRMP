@@ -615,19 +615,6 @@ def main():
                                     # If set, baseline experiment will use exactly this many benign clients
         'num_rounds': 50,  # Total number of federated learning rounds (int)
         
-        # ========== Training Mode Configuration ==========
-        'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
-        # LoRA parameters (only used when use_lora=True)
-        # NOTE: Lower r values = faster training but potentially less capacity
-        # Recommended: r=8 for speed, r=16 for better performance (default)
-        'lora_r': 8,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
-        'lora_alpha': 16,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
-        'lora_dropout': 0.1,  # LoRA dropout rate
-        'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
-        # Model configuration
-        'model_name': 'distilbert-base-uncased',  # Model name or path
-        'num_labels': 4,  # Number of classification labels
-        
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
@@ -642,13 +629,28 @@ def main():
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
+
+        # ========== Training Mode Configuration ==========
+        'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
+        # LoRA parameters (only used when use_lora=True)
+        # NOTE: Lower r values = faster training but potentially less capacity
+        # Recommended: r=8 for speed, r=16 for better performance (default)
+        'lora_r': 8,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
+        'lora_alpha': 16,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
+        'lora_dropout': 0.1,  # LoRA dropout rate
+        'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
+        # Model configuration
+        'model_name': 'distilbert-base-uncased',  # Model name or path
+        'num_labels': 4,  # Number of classification labels
+
+
         # ========== Attack Configuration ==========
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 0.6,  # Tighter proximity for camouflage (closer to global)
         'gamma': 5.0,  # Tighter aggregation distance budget
-        
+
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
