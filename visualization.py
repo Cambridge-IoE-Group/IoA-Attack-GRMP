@@ -250,64 +250,97 @@ class ExperimentVisualizer:
         attacker_clients = [{'id': cid, 'sims': client_similarities[cid]} 
                            for cid in all_ids if cid in attacker_ids_set]
         
-        # Plot benign agents - IEEE style colors
-        # Ensure ALL benign clients are plotted with distinct colors and markers
-        for i, client in enumerate(benign_clients):  # Plot ALL benign clients
+        # Align thresholds with rounds length (do this before plotting for consistency)
+        if len(thresholds) < len(rounds):
+            thresholds = thresholds + [thresholds[-1] if len(thresholds) > 0 else 0.0] * (len(rounds) - len(thresholds))
+        elif len(thresholds) > len(rounds):
+            thresholds = thresholds[:len(rounds)]
+        
+        # Collect all similarity values for adaptive y-axis range (before plotting)
+        # Use aligned data to ensure accuracy
+        all_similarity_values = []
+        
+        # Process benign clients - align and collect data
+        aligned_benign_data = []
+        for client in benign_clients:
             sims = client['sims']
             # Align similarities with rounds length
             if len(sims) < len(rounds):
                 sims = sims + [sims[-1] if len(sims) > 0 else 0.0] * (len(rounds) - len(sims))
             elif len(sims) > len(rounds):
                 sims = sims[:len(rounds)]
-            
             if len(sims) == len(rounds):
-                # Use modulo to cycle through colors and markers if needed
-                color = IEEE_COLORS['benign'][i % len(IEEE_COLORS['benign'])]
-                marker = IEEE_MARKERS['benign'][i % len(IEEE_MARKERS['benign'])]
-                ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
-                       marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
-                       label=f'Device {client["id"]+1}', zorder=2,
-                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
-            else:
-                print(f"  ⚠️  Warning: Benign Client {client['id']} - sims length ({len(sims)}) != rounds length ({len(rounds)})")
+                all_similarity_values.extend(sims)
+                aligned_benign_data.append({'id': client['id'], 'sims': sims})
         
-        # Plot attacker agents - IEEE style red/orange
-        # Ensure ALL attackers are plotted with distinct colors and markers
-        for i, client in enumerate(attacker_clients):  # Plot ALL attackers
+        # Process attacker clients - align and collect data
+        aligned_attacker_data = []
+        for client in attacker_clients:
             sims = client['sims']
             if len(sims) < len(rounds):
                 sims = sims + [sims[-1] if len(sims) > 0 else 0.0] * (len(rounds) - len(sims))
             elif len(sims) > len(rounds):
                 sims = sims[:len(rounds)]
-            
             if len(sims) == len(rounds):
-                # Use modulo to cycle through colors and markers if needed
-                color = IEEE_COLORS['attacker'][i % len(IEEE_COLORS['attacker'])]
-                marker = IEEE_MARKERS['attacker'][i % len(IEEE_MARKERS['attacker'])]
-                ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
-                       marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
-                       label=f'Attacker {client["id"]+1}', zorder=2,
-                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
-            else:
-                print(f"  ⚠️  Warning: Attacker Client {client['id']} - sims length ({len(sims)}) != rounds length ({len(rounds)})")
+                all_similarity_values.extend(sims)
+                aligned_attacker_data.append({'id': client['id'], 'sims': sims})
         
-        # Align thresholds with rounds length
-        if len(thresholds) < len(rounds):
-            thresholds = thresholds + [thresholds[-1] if len(thresholds) > 0 else 0.0] * (len(rounds) - len(thresholds))
-        elif len(thresholds) > len(rounds):
-            thresholds = thresholds[:len(rounds)]
+        # Also include thresholds
+        if len(thresholds) == len(rounds):
+            all_similarity_values.extend(thresholds)
+        
+        # Calculate adaptive y-axis range with padding
+        if all_similarity_values:
+            y_min = min(all_similarity_values)
+            y_max = max(all_similarity_values)
+            y_range = y_max - y_min
+            
+            # Add 10% padding on both sides
+            padding = max(y_range * 0.1, 0.05)  # At least 0.05 padding
+            y_min_adjusted = max(0.0, y_min - padding)  # Don't go below 0
+            y_max_adjusted = min(1.0, y_max + padding)  # Don't go above 1
+            
+            # If range is very small, ensure minimum range of 0.2
+            if y_max_adjusted - y_min_adjusted < 0.2:
+                center = (y_min + y_max) / 2
+                y_min_adjusted = max(0.0, center - 0.1)
+                y_max_adjusted = min(1.0, center + 0.1)
+        else:
+            # Fallback to default range if no data
+            y_min_adjusted = 0.0
+            y_max_adjusted = 1.0
+        
+        # Plot benign agents - IEEE style colors (use aligned data)
+        for i, client_data in enumerate(aligned_benign_data):
+            sims = client_data['sims']
+            # Use modulo to cycle through colors and markers if needed
+            color = IEEE_COLORS['benign'][i % len(IEEE_COLORS['benign'])]
+            marker = IEEE_MARKERS['benign'][i % len(IEEE_MARKERS['benign'])]
+            ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
+                   marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
+                   label=f'Device {client_data["id"]+1}', zorder=2,
+                   markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
+        
+        # Plot attacker agents - IEEE style red/orange (use aligned data)
+        for i, client_data in enumerate(aligned_attacker_data):
+            sims = client_data['sims']
+            # Use modulo to cycle through colors and markers if needed
+            color = IEEE_COLORS['attacker'][i % len(IEEE_COLORS['attacker'])]
+            marker = IEEE_MARKERS['attacker'][i % len(IEEE_MARKERS['attacker'])]
+            ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
+                   marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
+                   label=f'Attacker {client_data["id"]+1}', zorder=2,
+                   markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
         
         # Plot defense threshold - IEEE style dashed line
         if len(thresholds) == len(rounds):
             ax.plot(rounds, thresholds, '--', color=IEEE_COLORS['threshold'], 
                    linewidth=2, label='Threshold', zorder=1, alpha=0.8)
-        else:
-            print(f"  ⚠️  Warning: thresholds length ({len(thresholds)}) != rounds length ({len(rounds)})")
         
-        # IEEE-style axes
+        # IEEE-style axes (y-axis range already calculated above)
         ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
         ax.set_ylabel('Cosine Similarity', fontsize=11, fontweight='normal')
-        ax.set_ylim([0.0, 1.0])
+        ax.set_ylim([y_min_adjusted, y_max_adjusted])  # Adaptive y-axis range
         ax.set_xlim([1, max(rounds) if rounds else 1])
         ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
         ax.spines['top'].set_visible(False)
