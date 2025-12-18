@@ -8,23 +8,71 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import json
 
-# Set style for publication-quality figures
-try:
-    plt.style.use('seaborn-v0_8-darkgrid')
-except OSError:
-    try:
-        plt.style.use('seaborn-darkgrid')
-    except OSError:
-        plt.style.use('default')  # Fallback to default style
+# Set style for IEEE publication-quality figures
+# Use clean, minimal style without heavy grid
+plt.style.use('default')
 
-plt.rcParams['figure.figsize'] = (12, 8)
-plt.rcParams['font.size'] = 11
-plt.rcParams['axes.labelsize'] = 12
-plt.rcParams['axes.titlesize'] = 14
+# IEEE-style parameters: clean, professional, publication-ready
+plt.rcParams['figure.figsize'] = (6.5, 5)  # IEEE column width (6.5 inches)
+plt.rcParams['font.size'] = 10
+plt.rcParams['font.family'] = 'serif'  # Use serif font for IEEE style
+plt.rcParams['axes.labelsize'] = 11
+plt.rcParams['axes.titlesize'] = 12
 plt.rcParams['xtick.labelsize'] = 10
 plt.rcParams['ytick.labelsize'] = 10
-plt.rcParams['legend.fontsize'] = 10
-plt.rcParams['figure.titlesize'] = 16
+plt.rcParams['legend.fontsize'] = 9
+plt.rcParams['legend.frameon'] = True
+plt.rcParams['legend.framealpha'] = 1.0
+plt.rcParams['legend.fancybox'] = False
+plt.rcParams['legend.edgecolor'] = 'black'
+plt.rcParams['legend.borderpad'] = 0.4
+plt.rcParams['figure.titlesize'] = 12
+plt.rcParams['axes.linewidth'] = 0.8
+plt.rcParams['grid.linewidth'] = 0.5
+plt.rcParams['grid.alpha'] = 0.3
+plt.rcParams['lines.linewidth'] = 1.5
+plt.rcParams['lines.markersize'] = 5
+
+# IEEE-style color palette: professional, distinct colors
+# Optimized for maximum distinguishability
+# Colors are carefully selected to be easily distinguishable in both print and screen
+IEEE_COLORS = {
+    'benign': [
+        '#0066CC',  # Blue (Device 1)
+        '#FF6600',  # Orange (Device 2) 
+        '#00B050',  # Green (Device 3)
+        '#FFC000',  # Amber/Yellow (Device 4)
+        '#7030A0',  # Purple (Device 5)
+        '#C55A11',  # Brown (Device 6)
+        '#70AD47',  # Light Green (Device 7)
+        '#5B9BD5',  # Light Blue (Device 8)
+        '#2E75B6',  # Dark Blue (Device 9)
+        '#0070C0',  # Cyan Blue (Device 10)
+        '#954F72',  # Rose (Device 11)
+        '#1F4E79',  # Navy (Device 12)
+        '#000000',  # Black (Device 13)
+        '#C00000',  # Red (Device 14) - use carefully, distinguish from attackers
+        '#FF0000'   # Bright Red (Device 15)
+    ],
+    'attacker': [
+        '#DC143C',  # Crimson (Attacker 1)
+        '#C00000',  # Dark Red (Attacker 2)
+        '#FF4500',  # Orange Red (Attacker 3)
+        '#B22222',  # Fire Brick (Attacker 4)
+        '#E74C3C',  # Red (Attacker 5)
+        '#C0392B',  # Dark Red (Attacker 6)
+        '#8B0000',  # Dark Red (Attacker 7)
+        '#A52A2A'   # Brown Red (Attacker 8)
+    ],
+    'threshold': '#228B22',  # Forest green for threshold
+    'global': '#0066CC'  # Professional blue for global accuracy
+}
+
+# IEEE-style markers: distinct, professional, optimized for clarity
+IEEE_MARKERS = {
+    'benign': ['o', 's', '^', 'D', 'v', 'p', '*', 'h', 'X', 'd', '<', '>', 'P', 'H', '8'],
+    'attacker': ['s', 'D', '^', 'v', 'p', '*', 'h', 'X']
+}
 
 
 class ExperimentVisualizer:
@@ -68,23 +116,33 @@ class ExperimentVisualizer:
                     clean_acc.append(clean_acc[-1] if clean_acc else 0.0)
                 print(f"     Padded {len(missing)} missing rounds")
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        color_acc = 'tab:blue'
-        ax.set_xlabel('Communication Round', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Global Learning Accuracy', fontsize=12, fontweight='bold')
+        fig, ax = plt.subplots(figsize=(6.5, 5))
         
-        # Plot accuracy line
-        ax.plot(rounds, clean_acc, 'o-', color=color_acc, linewidth=2,
-                markersize=6, label='Global Accuracy', zorder=3)
+        # IEEE-style: clean, professional appearance
+        ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
         
-        ax.tick_params(axis='y', labelcolor=color_acc)
-        ax.set_ylim([max(0.0, min(clean_acc) - 0.05), min(1.0, max(clean_acc) + 0.05)])
+        # Convert to percentage for IEEE style
+        clean_acc_pct = [acc * 100 for acc in clean_acc]
+        
+        # Plot accuracy line - IEEE style: solid line, clear marker
+        ax.plot(rounds, clean_acc_pct, '-', color=IEEE_COLORS['global'], 
+                linewidth=2, marker='o', markersize=4, markevery=max(1, len(rounds)//20),
+                label='Global Accuracy', zorder=3, markerfacecolor=IEEE_COLORS['global'],
+                markeredgecolor='white', markeredgewidth=0.5)
+        
+        # IEEE-style: subtle grid, clean axes
+        ax.set_ylim([max(0.0, min(clean_acc_pct) - 2), min(100.0, max(clean_acc_pct) + 2)])
         ax.set_xlim([1, max(rounds) if rounds else 1])
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         
-        plt.title('Figure 3: Global Learning Accuracy',
-                  fontsize=14, fontweight='bold', pad=20)
+        # IEEE-style legend: clear, professional
+        ax.legend(loc='best', frameon=True, fancybox=False, shadow=False,
+                 edgecolor='black', framealpha=1.0, fontsize=9)
+        
+        # No title for IEEE style (usually added in LaTeX)
         plt.tight_layout()
         
         out_path = save_path or (self.results_dir / 'figure3_global_accuracy_stability.png')
@@ -130,7 +188,7 @@ class ExperimentVisualizer:
                     rounds = expected_rounds
                 print(f"     Padded {len(missing_rounds)} missing rounds")
         
-        fig, ax = plt.subplots(figsize=(12, 7))
+        fig, ax = plt.subplots(figsize=(6.5, 5))
         
         # Extract similarities and client info from defense logs
         # Build a mapping of client_id -> list of similarities over rounds
@@ -191,75 +249,72 @@ class ExperimentVisualizer:
         attacker_clients = [{'id': cid, 'sims': client_similarities[cid]} 
                            for cid in all_ids if cid in attacker_ids_set]
         
-        # Plot benign agents (blue lines with different markers)
-        # Extended markers and colors to support many clients
-        markers_benign = ['o', '^', 's', 'D', 'v', 'p', '*', 'h', 'X', 'd', '<', '>']
-        colors_benign = ['#1f77b4', '#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', 
-                        '#bcbd22', '#17becf', '#ff9896', '#c5b0d5', '#ffbb78', '#98df8a']
+        # Plot benign agents - IEEE style colors
+        # Ensure ALL benign clients are plotted with distinct colors and markers
         for i, client in enumerate(benign_clients):  # Plot ALL benign clients
             sims = client['sims']
             # Align similarities with rounds length
             if len(sims) < len(rounds):
-                # Pad with last value if incomplete
                 sims = sims + [sims[-1] if len(sims) > 0 else 0.0] * (len(rounds) - len(sims))
             elif len(sims) > len(rounds):
-                # Truncate if too long
                 sims = sims[:len(rounds)]
             
-            # Now lengths should match
             if len(sims) == len(rounds):
-                ax.plot(rounds, sims, marker=markers_benign[i % len(markers_benign)], 
-                       color=colors_benign[i % len(colors_benign)], linewidth=2, 
-                       markersize=5, label=f'Benign Agent {client["id"]+1}', alpha=0.8)
+                # Use modulo to cycle through colors and markers if needed
+                color = IEEE_COLORS['benign'][i % len(IEEE_COLORS['benign'])]
+                marker = IEEE_MARKERS['benign'][i % len(IEEE_MARKERS['benign'])]
+                ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
+                       marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
+                       label=f'Device {client["id"]+1}', zorder=2,
+                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 print(f"  ⚠️  Warning: Benign Client {client['id']} - sims length ({len(sims)}) != rounds length ({len(rounds)})")
         
-        # Plot attacker agents (red/orange lines with square markers)
-        markers_attacker = ['s', 'D', '^', 'v', 'p', '*', 'h', 'X']
-        colors_attacker = ['#d62728', '#ff7f0e', '#ff6b6b', '#ee5a6f', '#c44569', 
-                          '#f8b500', '#ff6348', '#ff4757']
+        # Plot attacker agents - IEEE style red/orange
+        # Ensure ALL attackers are plotted with distinct colors and markers
         for i, client in enumerate(attacker_clients):  # Plot ALL attackers
             sims = client['sims']
-            # Align similarities with rounds length
             if len(sims) < len(rounds):
-                # Pad with last value if incomplete
                 sims = sims + [sims[-1] if len(sims) > 0 else 0.0] * (len(rounds) - len(sims))
             elif len(sims) > len(rounds):
-                # Truncate if too long
                 sims = sims[:len(rounds)]
             
-            # Now lengths should match
             if len(sims) == len(rounds):
-                ax.plot(rounds, sims, marker=markers_attacker[i], 
-                       color=colors_attacker[i % len(colors_attacker)], linewidth=2, 
-                       markersize=6, label=f'Attacker {client["id"]+1}', alpha=0.8)
+                # Use modulo to cycle through colors and markers if needed
+                color = IEEE_COLORS['attacker'][i % len(IEEE_COLORS['attacker'])]
+                marker = IEEE_MARKERS['attacker'][i % len(IEEE_MARKERS['attacker'])]
+                ax.plot(rounds, sims, '-', color=color, linewidth=1.5,
+                       marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
+                       label=f'Attacker {client["id"]+1}', zorder=2,
+                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 print(f"  ⚠️  Warning: Attacker Client {client['id']} - sims length ({len(sims)}) != rounds length ({len(rounds)})")
         
         # Align thresholds with rounds length
         if len(thresholds) < len(rounds):
-            # Pad with last value if incomplete
             thresholds = thresholds + [thresholds[-1] if len(thresholds) > 0 else 0.0] * (len(rounds) - len(thresholds))
         elif len(thresholds) > len(rounds):
-            # Truncate if too long
             thresholds = thresholds[:len(rounds)]
         
-        # Plot defense threshold (green bars/line)
+        # Plot defense threshold - IEEE style dashed line
         if len(thresholds) == len(rounds):
-            ax.plot(rounds, thresholds, 'g-', linewidth=2.5, label='Defense Threshold', 
-                   alpha=0.7, linestyle='--')
+            ax.plot(rounds, thresholds, '--', color=IEEE_COLORS['threshold'], 
+                   linewidth=2, label='Threshold', zorder=1, alpha=0.8)
         else:
             print(f"  ⚠️  Warning: thresholds length ({len(thresholds)}) != rounds length ({len(rounds)})")
         
-        ax.set_xlabel('Communication Round', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Cosine Similarity', fontsize=12, fontweight='bold')
+        # IEEE-style axes
+        ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Cosine Similarity', fontsize=11, fontweight='normal')
         ax.set_ylim([0.0, 1.0])
         ax.set_xlim([1, max(rounds) if rounds else 1])
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='best', framealpha=0.9, ncol=2)
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         
-        plt.title('Figure 4: Temporal Evolution of Cosine Similarity for Each LLM Agent\n'
-                 'with Dynamic Detection Threshold', fontsize=14, fontweight='bold', pad=20)
+        # IEEE-style legend: clear, bottom-right or outside
+        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
+                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
         plt.tight_layout()
         
         if save_path:
@@ -276,40 +331,42 @@ class ExperimentVisualizer:
         Figure 5: Learning accuracy of local LLM agents with no attack 
         over communication rounds.
         """
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(6.5, 5))
         
-        # Plot each benign agent
-        # Extended markers and colors to support many clients
-        markers = ['o', '^', 's', 'D', 'v', 'p', '*', 'h', 'X', 'd', '<', '>']
-        colors = ['#1f77b4', '#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', 
-                 '#bcbd22', '#17becf', '#ff9896', '#c5b0d5', '#ffbb78', '#98df8a']
-        
+        # Plot each benign agent - IEEE style
+        # Ensure ALL clients are plotted with distinct colors and markers
         for i, (client_id, accs) in enumerate(sorted(local_accuracies.items())):
             # Align accuracies with rounds length
             if len(accs) < len(rounds):
-                # Pad with last value if incomplete
                 accs = accs + [accs[-1] if len(accs) > 0 else 0.0] * (len(rounds) - len(accs))
             elif len(accs) > len(rounds):
-                # Truncate if too long
                 accs = accs[:len(rounds)]
             
-            # Now lengths should match
             if len(accs) == len(rounds):
-                ax.plot(rounds, accs, marker=markers[i % len(markers)], 
-                       color=colors[i % len(colors)], linewidth=2, markersize=5,
-                       label=f'Benign Agent {client_id+1}', alpha=0.8)
+                # Convert to percentage
+                accs_pct = [acc * 100 for acc in accs]
+                # Use modulo to cycle through colors and markers if needed
+                color = IEEE_COLORS['benign'][i % len(IEEE_COLORS['benign'])]
+                marker = IEEE_MARKERS['benign'][i % len(IEEE_MARKERS['benign'])]
+                ax.plot(rounds, accs_pct, '-', color=color, linewidth=1.5,
+                       marker=marker, markersize=4, markevery=max(1, len(rounds)//20),
+                       label=f'Device {client_id+1}', zorder=2,
+                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 print(f"  ⚠️  Warning: Client {client_id} - accs length ({len(accs)}) != rounds length ({len(rounds)})")
         
-        ax.set_xlabel('Communication Round', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Local Learning Accuracy', fontsize=12, fontweight='bold')
-        ax.set_ylim([0.80, 0.95])
+        # IEEE-style axes
+        ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
+        ax.set_ylim([80, 95])
         ax.set_xlim([1, max(rounds)])
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         
-        plt.title('Figure 5: Learning Accuracy of Local LLM Agents\n'
-                 'with No Attack', fontsize=14, fontweight='bold', pad=20)
+        # IEEE-style legend
+        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
+                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
         plt.tight_layout()
         
         if save_path:
@@ -338,7 +395,7 @@ class ExperimentVisualizer:
             num_clients: Total number of clients (for validation)
             num_attackers: Number of attacker clients (for validation)
         """
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(6.5, 5))
         
         # Separate benign and attacker
         benign_accs = {cid: accs for cid, accs in local_accuracies.items() 
@@ -346,79 +403,78 @@ class ExperimentVisualizer:
         attacker_accs = {cid: accs for cid, accs in local_accuracies.items() 
                         if cid in attacker_ids}
         
-        # Plot benign agents (blue lines)
-        # Extended markers and colors to support many clients
-        markers_benign = ['o', '^', 's', 'D', 'v', 'p', '*', 'h', 'X', 'd', '<', '>']
-        colors_benign = ['#1f77b4', '#2ca02c', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', 
-                        '#bcbd22', '#17becf', '#ff9896', '#c5b0d5', '#ffbb78', '#98df8a']
+        # Plot benign agents - IEEE style
+        # Ensure ALL benign clients are plotted with distinct colors and markers
         for i, (client_id, accs) in enumerate(sorted(benign_accs.items())):
-            # Align accuracies with rounds length
             if len(accs) < len(rounds):
-                # Pad with last value if incomplete
                 accs = accs + [accs[-1] if len(accs) > 0 else 0.0] * (len(rounds) - len(accs))
             elif len(accs) > len(rounds):
-                # Truncate if too long
                 accs = accs[:len(rounds)]
             
-            # Now lengths should match
             if len(accs) == len(rounds):
-                ax.plot(rounds, accs, marker=markers_benign[i % len(markers_benign)], 
-                       color=colors_benign[i % len(colors_benign)], linewidth=2, 
-                       markersize=5, label=f'Benign Agent {client_id+1}', alpha=0.8)
+                # Convert to percentage
+                accs_pct = [acc * 100 for acc in accs]
+                # Use modulo to cycle through colors and markers if needed
+                color = IEEE_COLORS['benign'][i % len(IEEE_COLORS['benign'])]
+                marker = IEEE_MARKERS['benign'][i % len(IEEE_MARKERS['benign'])]
+                ax.plot(rounds, accs_pct, '-', color=color, linewidth=1.5,
+                       marker=marker, markersize=4, markevery=max(1, len(rounds)//20),
+                       label=f'Device {client_id+1}', zorder=2,
+                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 print(f"  ⚠️  Warning: Benign Client {client_id} - accs length ({len(accs)}) != rounds length ({len(rounds)})")
         
-        # Plot attacker agents (red/orange lines with square markers)
-        markers_attacker = ['s', 'D', '^', 'v', 'p', '*', 'h', 'X']
-        colors_attacker = ['#d62728', '#ff7f0e', '#ff6b6b', '#ee5a6f', '#c44569', 
-                          '#f8b500', '#ff6348', '#ff4757']
+        # Plot attacker agents - IEEE style red/orange
+        # Ensure ALL attackers are plotted with distinct colors and markers
         for i, (client_id, accs) in enumerate(sorted(attacker_accs.items())):
-            # Align accuracies with rounds length
             if len(accs) < len(rounds):
-                # Pad with last value if incomplete
                 accs = accs + [accs[-1] if len(accs) > 0 else 0.0] * (len(rounds) - len(accs))
             elif len(accs) > len(rounds):
-                # Truncate if too long
                 accs = accs[:len(rounds)]
             
-            # Now lengths should match
             if len(accs) == len(rounds):
-                ax.plot(rounds, accs, marker=markers_attacker[i], 
-                       color=colors_attacker[i % len(colors_attacker)], linewidth=2, 
-                       markersize=6, label=f'Attacker {client_id+1}', alpha=0.8)
+                # Convert to percentage
+                accs_pct = [acc * 100 for acc in accs]
+                # Use modulo to cycle through colors and markers if needed
+                color = IEEE_COLORS['attacker'][i % len(IEEE_COLORS['attacker'])]
+                marker = IEEE_MARKERS['attacker'][i % len(IEEE_MARKERS['attacker'])]
+                ax.plot(rounds, accs_pct, '-', color=color, linewidth=1.5,
+                       marker=marker, markersize=4, markevery=max(1, len(rounds)//20),
+                       label=f'Attacker {client_id+1}', zorder=2,
+                       markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
             else:
                 print(f"  ⚠️  Warning: Attacker Client {client_id} - accs length ({len(accs)}) != rounds length ({len(rounds)})")
         
-        # Calculate dynamic y-axis range based on actual data
+        # Calculate dynamic y-axis range based on actual data (in percentage)
         all_acc_values = []
         for accs in local_accuracies.values():
             if accs:
-                all_acc_values.extend(accs)
+                all_acc_values.extend([acc * 100 for acc in accs])
         
         if all_acc_values:
             min_acc = min(all_acc_values)
             max_acc = max(all_acc_values)
-            # Add 5% padding on both sides, but ensure minimum is at least 0.0
-            y_min = max(0.0, min_acc - 0.05)
-            y_max = min(1.0, max_acc + 0.05)
-            # Ensure there's at least a 0.1 range for visibility
-            if y_max - y_min < 0.1:
+            y_min = max(0.0, min_acc - 2)
+            y_max = min(100.0, max_acc + 2)
+            if y_max - y_min < 10:
                 center = (y_min + y_max) / 2
-                y_min = max(0.0, center - 0.05)
-                y_max = min(1.0, center + 0.05)
+                y_min = max(0.0, center - 5)
+                y_max = min(100.0, center + 5)
         else:
-            # Fallback range if no data
-            y_min, y_max = 0.0, 1.0
+            y_min, y_max = 0.0, 100.0
         
-        ax.set_xlabel('Communication Round', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Local Learning Accuracy', fontsize=12, fontweight='bold')
+        # IEEE-style axes
+        ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
         ax.set_ylim([y_min, y_max])
         ax.set_xlim([1, max(rounds)])
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         
-        plt.title('Figure 6: Learning Accuracy of Local LLM Agents\n'
-                 'under the GRMP Attack', fontsize=14, fontweight='bold', pad=20)
+        # IEEE-style legend
+        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
+                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
         plt.tight_layout()
         
         if save_path:
