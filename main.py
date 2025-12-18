@@ -285,6 +285,13 @@ def run_experiment(config):
 
     print(f"\nResults saved to: {results_path}")
     
+    # Print detailed statistics for data collection
+    attacker_ids = [client.client_id for client in server.clients 
+                   if getattr(client, 'is_attacker', False)]
+    print_detailed_statistics(server.log_data, progressive_metrics, 
+                            server.history['local_accuracies'], attacker_ids, 
+                            config['experiment_name'], results_dir)
+    
     # Generate visualizations
     if config.get('generate_plots', True):
         print("\n" + "=" * 60)
@@ -312,13 +319,27 @@ def run_experiment(config):
     return server.log_data, progressive_metrics
 
 # Detailed statistics printing for data collection
-def print_detailed_statistics(server_log_data, progressive_metrics, local_accuracies, attacker_ids):
+def print_detailed_statistics(server_log_data, progressive_metrics, local_accuracies, attacker_ids, 
+                             experiment_name='experiment', results_dir=None):
     """
     Print detailed statistics for data collection and multi-run comparison.
     Outputs all key metrics in tabular format for easy copying to Excel/CSV.
+    
+    Args:
+        server_log_data: List of round logs from server
+        progressive_metrics: Dictionary with progressive metrics
+        local_accuracies: Dictionary with local accuracies per client
+        attacker_ids: List of attacker client IDs
+        experiment_name: Name of the experiment (for file naming)
+        results_dir: Path to results directory (default: Path("results"))
     """
     import csv
     from pathlib import Path
+    
+    if results_dir is None:
+        results_dir = Path("results")
+    else:
+        results_dir = Path(results_dir)
     
     print("\n" + "=" * 80)
     print("📊 DETAILED EXPERIMENT STATISTICS FOR DATA COLLECTION")
@@ -328,9 +349,6 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
     if not rounds:
         print("⚠️  No rounds completed.")
         return
-    
-    results_dir = Path("results")
-    experiment_name = server_log_data[0].get('experiment_name', 'experiment') if server_log_data else 'experiment'
     
     # Get all client IDs
     all_client_ids = set()
