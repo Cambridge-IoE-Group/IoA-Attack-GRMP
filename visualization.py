@@ -15,7 +15,8 @@ plt.style.use('default')
 # IEEE-style parameters: clean, professional, publication-ready
 plt.rcParams['figure.figsize'] = (6.5, 5)  # IEEE column width (6.5 inches)
 plt.rcParams['font.size'] = 10
-plt.rcParams['font.family'] = 'serif'  # Use serif font for IEEE style
+plt.rcParams['font.family'] = 'sans-serif'  # Use sans-serif font family
+plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans', 'Helvetica', 'sans-serif']  # Arial as primary font
 plt.rcParams['axes.labelsize'] = 11
 plt.rcParams['axes.titlesize'] = 12
 plt.rcParams['xtick.labelsize'] = 10
@@ -312,10 +313,14 @@ class ExperimentVisualizer:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
-        # IEEE-style legend: clear, bottom-right or outside
-        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
-                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
-        plt.tight_layout()
+        # IEEE-style legend: place outside plot area to avoid blocking data
+        # Use bbox_to_anchor to position legend outside the plot
+        legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), 
+                          frameon=True, fancybox=False, shadow=False,
+                          edgecolor='black', framealpha=1.0, fontsize=9, 
+                          ncol=1, columnspacing=0.5)
+        # Adjust layout to make room for legend outside the plot
+        plt.tight_layout(rect=[0, 0, 0.85, 1])  # [left, bottom, right, top] - leave 15% space on right
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -364,10 +369,13 @@ class ExperimentVisualizer:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
-        # IEEE-style legend
-        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
-                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
-        plt.tight_layout()
+        # IEEE-style legend: place outside plot area to avoid blocking data
+        legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), 
+                          frameon=True, fancybox=False, shadow=False,
+                          edgecolor='black', framealpha=1.0, fontsize=9, 
+                          ncol=1, columnspacing=0.5)
+        # Adjust layout to make room for legend outside the plot
+        plt.tight_layout(rect=[0, 0, 0.85, 1])  # Leave 15% space on right for legend
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -472,10 +480,13 @@ class ExperimentVisualizer:
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
-        # IEEE-style legend
-        ax.legend(loc='lower right', frameon=True, fancybox=False, shadow=False,
-                 edgecolor='black', framealpha=1.0, fontsize=9, ncol=1)
-        plt.tight_layout()
+        # IEEE-style legend: place outside plot area to avoid blocking data
+        legend = ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), 
+                          frameon=True, fancybox=False, shadow=False,
+                          edgecolor='black', framealpha=1.0, fontsize=9, 
+                          ncol=1, columnspacing=0.5)
+        # Adjust layout to make room for legend outside the plot
+        plt.tight_layout(rect=[0, 0, 0.85, 1])  # Leave 15% space on right for legend
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
