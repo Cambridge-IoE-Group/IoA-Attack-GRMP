@@ -311,6 +311,226 @@ def run_experiment(config):
     
     return server.log_data, progressive_metrics
 
+# Detailed statistics printing for data collection
+def print_detailed_statistics(server_log_data, progressive_metrics, local_accuracies, attacker_ids):
+    """
+    Print detailed statistics for data collection and multi-run comparison.
+    Outputs all key metrics in tabular format for easy copying to Excel/CSV.
+    """
+    import csv
+    from pathlib import Path
+    
+    print("\n" + "=" * 80)
+    print("📊 DETAILED EXPERIMENT STATISTICS FOR DATA COLLECTION")
+    print("=" * 80)
+    
+    rounds = progressive_metrics['rounds']
+    if not rounds:
+        print("⚠️  No rounds completed.")
+        return
+    
+    results_dir = Path("results")
+    experiment_name = server_log_data[0].get('experiment_name', 'experiment') if server_log_data else 'experiment'
+    
+    # Get all client IDs
+    all_client_ids = set()
+    for log in server_log_data:
+        if 'local_accuracies' in log:
+            all_client_ids.update(log['local_accuracies'].keys())
+        if 'defense' in log and 'similarities' in log['defense']:
+            # Infer client IDs from similarities count (if available)
+            similarities = log['defense'].get('similarities', [])
+            accepted = log['defense'].get('accepted_clients', [])
+            rejected = log['defense'].get('rejected_clients', [])
+            all_client_ids.update(accepted + rejected)
+    
+    # Also include from local_accuracies history
+    if local_accuracies:
+        all_client_ids.update(local_accuracies.keys())
+    
+    all_client_ids = sorted(all_client_ids)
+    attacker_ids_set = set(attacker_ids) if attacker_ids else set()
+    
+    # ========== 1. Global Accuracy Table ==========
+    print("\n" + "-" * 80)
+    print("1️⃣  GLOBAL ACCURACY (Per Round)")
+    print("-" * 80)
+    print(f"{'Round':<8} | {'Clean Accuracy':<15} | {'Accuracy Change':<17}")
+    print("-" * 80)
+    
+    clean_acc = progressive_metrics['clean_acc']
+    for i, r in enumerate(rounds):
+        acc = clean_acc[i] if i < len(clean_acc) else 0.0
+        acc_change = (clean_acc[i] - clean_acc[i-1]) if i > 0 else 0.0
+        print(f"{r:<8} | {acc:<15.6f} | {acc_change:>+17.6f}")
+    
+    print("-" * 80)
+    if clean_acc:
+        print(f"Summary: Initial={clean_acc[0]:.6f}, Final={clean_acc[-1]:.6f}, "
+              f"Best={max(clean_acc):.6f}, Change={clean_acc[-1]-clean_acc[0]:+.6f}")
+    
+    # ========== 2. Cosine Similarity Table ==========
+    print("\n" + "-" * 80)
+    print("2️⃣  COSINE SIMILARITY (Per Round, Per Client)")
+    print("-" * 80)
+    
+    # Prepare header
+    header = "Round | "
+    for cid in all_client_ids:
+        client_type = "A" if cid in attacker_ids_set else "B"
+        header += f"Client{cid}({client_type}) | "
+    header += "Threshold | Mean | Std"
+    print(header)
+    print("-" * 80)
+    
+    for log in server_log_data:
+        round_num = log['round']
+        defense = log.get('defense', {})
+        similarities = defense.get('similarities', [])
+        threshold = defense.get('threshold', 0.0)
+        accepted = defense.get('accepted_clients', [])
+        rejected = defense.get('rejected_clients', [])
+        
+        # Create similarity map
+        all_clients_round = sorted(set(accepted + rejected))
+        sim_map = {}
+        if len(similarities) == len(all_clients_round):
+            for idx, cid in enumerate(all_clients_round):
+                sim_map[cid] = similarities[idx]
+        
+        # Print row
+        row = f"{round_num:<6} | "
+        for cid in all_client_ids:
+            sim = sim_map.get(cid, 0.0)
+            row += f"{sim:<14.6f} | "
+        
+        # Calculate mean and std for this round
+        sim_values = [sim_map.get(cid, 0.0) for cid in all_client_ids if cid in sim_map]
+        mean_sim = np.mean(sim_values) if sim_values else 0.0
+        std_sim = np.std(sim_values) if len(sim_values) > 1 else 0.0
+        
+        row += f"{threshold:<10.6f} | {mean_sim:<6.6f} | {std_sim:.6f}"
+        print(row)
+    
+    print("-" * 80)
+    
+    # ========== 3. Local Accuracy Table ==========
+    print("\n" + "-" * 80)
+    print("3️⃣  LOCAL ACCURACY (Per Round, Per Client)")
+    print("-" * 80)
+    
+    # Prepare header
+    header = "Round | "
+    for cid in all_client_ids:
+        client_type = "A" if cid in attacker_ids_set else "B"
+        header += f"Client{cid}({client_type}) | "
+    header += "Mean | Std"
+    print(header)
+    print("-" * 80)
+    
+    for log in server_log_data:
+        round_num = log['round']
+        local_accs_round = log.get('local_accuracies', {})
+        
+        # Print row
+        row = f"{round_num:<6} | "
+        acc_values = []
+        for cid in all_client_ids:
+            acc = local_accs_round.get(cid, 0.0)
+            acc_values.append(acc)
+            row += f"{acc:<14.6f} | "
+        
+        # Calculate mean and std
+        mean_acc = np.mean(acc_values) if acc_values else 0.0
+        std_acc = np.std(acc_values) if len(acc_values) > 1 else 0.0
+        row += f"{mean_acc:<6.6f} | {std_acc:.6f}"
+        print(row)
+    
+    print("-" * 80)
+    
+    # ========== 4. Save to CSV files for easy import ==========
+    print("\n" + "-" * 80)
+    print("💾 SAVING DATA TO CSV FILES FOR EASY COLLECTION")
+    print("-" * 80)
+    
+    # Save Global Accuracy
+    csv_path1 = results_dir / f"{experiment_name}_global_accuracy.csv"
+    with open(csv_path1, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Round', 'Clean_Accuracy', 'Accuracy_Change'])
+        for i, r in enumerate(rounds):
+            acc = clean_acc[i] if i < len(clean_acc) else 0.0
+            acc_change = (clean_acc[i] - clean_acc[i-1]) if i > 0 else 0.0
+            writer.writerow([r, f"{acc:.6f}", f"{acc_change:.6f}"])
+    print(f"✅ Global Accuracy saved to: {csv_path1}")
+    
+    # Save Cosine Similarity
+    csv_path2 = results_dir / f"{experiment_name}_cosine_similarity.csv"
+    with open(csv_path2, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Header
+        header = ['Round', 'Threshold'] + [f"Client_{cid}_{'A' if cid in attacker_ids_set else 'B'}" 
+                                           for cid in all_client_ids] + ['Mean', 'Std']
+        writer.writerow(header)
+        
+        for log in server_log_data:
+            round_num = log['round']
+            defense = log.get('defense', {})
+            similarities = defense.get('similarities', [])
+            threshold = defense.get('threshold', 0.0)
+            accepted = defense.get('accepted_clients', [])
+            rejected = defense.get('rejected_clients', [])
+            
+            all_clients_round = sorted(set(accepted + rejected))
+            sim_map = {}
+            if len(similarities) == len(all_clients_round):
+                for idx, cid in enumerate(all_clients_round):
+                    sim_map[cid] = similarities[idx]
+            
+            row = [round_num, f"{threshold:.6f}"]
+            sim_values = []
+            for cid in all_client_ids:
+                sim = sim_map.get(cid, 0.0)
+                sim_values.append(sim)
+                row.append(f"{sim:.6f}")
+            
+            mean_sim = np.mean(sim_values) if sim_values else 0.0
+            std_sim = np.std(sim_values) if len(sim_values) > 1 else 0.0
+            row.extend([f"{mean_sim:.6f}", f"{std_sim:.6f}"])
+            writer.writerow(row)
+    print(f"✅ Cosine Similarity saved to: {csv_path2}")
+    
+    # Save Local Accuracy
+    csv_path3 = results_dir / f"{experiment_name}_local_accuracy.csv"
+    with open(csv_path3, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # Header
+        header = ['Round'] + [f"Client_{cid}_{'A' if cid in attacker_ids_set else 'B'}" 
+                             for cid in all_client_ids] + ['Mean', 'Std']
+        writer.writerow(header)
+        
+        for log in server_log_data:
+            round_num = log['round']
+            local_accs_round = log.get('local_accuracies', {})
+            
+            row = [round_num]
+            acc_values = []
+            for cid in all_client_ids:
+                acc = local_accs_round.get(cid, 0.0)
+                acc_values.append(acc)
+                row.append(f"{acc:.6f}")
+            
+            mean_acc = np.mean(acc_values) if acc_values else 0.0
+            std_acc = np.std(acc_values) if len(acc_values) > 1 else 0.0
+            row.extend([f"{mean_acc:.6f}", f"{std_acc:.6f}"])
+            writer.writerow(row)
+    print(f"✅ Local Accuracy saved to: {csv_path3}")
+    
+    print("\n" + "=" * 80)
+    print("✅ All statistics printed and saved to CSV files!")
+    print("   You can now easily collect data from multiple runs and compare them.")
+    print("=" * 80)
+
 # Simple analysis
 def analyze_results(metrics):
     print("\n" + "=" * 50)
@@ -370,7 +590,7 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 10,  # Total number of federated learning clients (int)
-        'num_attackers': 0,  # Number of attacker clients (int, must be < num_clients)
+        'num_attackers': 5,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
