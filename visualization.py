@@ -121,7 +121,7 @@ class ExperimentVisualizer:
         
         # IEEE-style: clean, professional appearance
         ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
-        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Global Testing Accuracy (%)', fontsize=11, fontweight='normal')
         
         # Convert to percentage for IEEE style
         clean_acc_pct = [acc * 100 for acc in clean_acc]
@@ -362,7 +362,7 @@ class ExperimentVisualizer:
         
         # IEEE-style axes
         ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
-        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Local Testing Accuracy (%)', fontsize=11, fontweight='normal')
         ax.set_ylim([80, 95])
         ax.set_xlim([1, max(rounds)])
         ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
@@ -473,7 +473,7 @@ class ExperimentVisualizer:
         
         # IEEE-style axes
         ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
-        ax.set_ylabel('Testing Accuracy (%)', fontsize=11, fontweight='normal')
+        ax.set_ylabel('Local Testing Accuracy (%)', fontsize=11, fontweight='normal')
         ax.set_ylim([y_min, y_max])
         ax.set_xlim([1, max(rounds)])
         ax.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
