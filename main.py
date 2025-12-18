@@ -684,9 +684,10 @@ def main():
         'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)
         
         # ========== Defense Mechanism Parameters ==========
-        'enable_defense': True,  # Whether to enable defense mechanism (bool, True/False)
+        'enable_defense': False,  # Whether to enable defense mechanism (bool, True/False)
             # Set to False to disable defense for faster testing or baseline experiments
-        'defense_threshold': 0,  # Base threshold for defense mechanism (float, lower = more strict) Set to 0 for attack baseline experiment.
+        'defense_threshold': 0,  # Base threshold for defense mechanism (float, lower = more strict) 
+            # Set to 0 for attack baseline experiment. Baseline 0.3
         'tolerance_factor': 3.0,  # Tolerance factor for defense mechanism (float, higher = more lenient). Baseline experiment uses 3.0.
         'similarity_alpha': 0.5,  # Weight for pairwise similarities in mixed similarity computation (float, 0.0-1.0)
         'defense_high_rejection_threshold': 0.4,  # High rejection rate threshold for adaptive defense (float, 0.0-1.0)
