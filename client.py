@@ -285,6 +285,9 @@ class AttackerClient(Client):
         self.use_lagrangian_dual = False  # 是否使用Lagrangian Dual机制
         self.lambda_lr = 0.01  # λ的更新步长
         self.rho_lr = 0.01     # ρ的更新步长
+        # 保存初始值，用于每轮重置（修改1和修改2）
+        self.lambda_init_value = None  # 保存初始λ值，用于prepare_for_round重置
+        self.rho_init_value = None     # 保存初始ρ值，用于prepare_for_round重置
         
         # Get model parameter count (works on CPU model)
         self._flat_numel = int(self.model.get_flat_params().numel())  # Convert to Python int
@@ -311,10 +314,20 @@ class AttackerClient(Client):
                 pass
 
     def prepare_for_round(self, round_num: int):
-        """Prepare for a new training round."""
+        """
+        Prepare for a new training round.
+        
+        修改1: 在每轮开始时重置λ和ρ到初始值，防止跨轮次累积导致数值不稳定
+        """
         self.set_round(round_num)
         # Data-agnostic attacker keeps an empty loader
         self.data_loader = self.data_manager.get_empty_loader()
+        
+        # 修改1: 重置Lagrangian乘数到初始值（每轮重新开始优化）
+        # 原因: 防止λ和ρ跨轮次累积增长，导致数值不稳定和优化失衡
+        if self.use_lagrangian_dual and self.lambda_init_value is not None and self.rho_init_value is not None:
+            self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
+            self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
 
     def receive_benign_updates(self, updates: List[torch.Tensor]):
         """Receive updates from benign clients."""
@@ -1148,18 +1161,25 @@ class AttackerClient(Client):
             rho_init: 初始ρ(1)值 (≥0, per paper Algorithm 1)
             lambda_lr: λ的更新学习率（subgradient step size）
             rho_lr: ρ的更新学习率（subgradient step size）
+        
+        修改2: 保存初始值，用于prepare_for_round重置
         """
         self.use_lagrangian_dual = use_lagrangian_dual
         if use_lagrangian_dual:
             # 论文: λ(1)≥0, ρ(1)≥0
-            self.lambda_dt = torch.tensor(max(0.0, lambda_init), requires_grad=False)
-            self.rho_dt = torch.tensor(max(0.0, rho_init), requires_grad=False)
+            # 修改2: 保存初始值，用于每轮重置
+            self.lambda_init_value = max(0.0, lambda_init)
+            self.rho_init_value = max(0.0, rho_init)
+            self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
+            self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
             self.lambda_lr = lambda_lr
             self.rho_lr = rho_lr
         else:
             # 硬约束投影模式
             self.lambda_dt = None
             self.rho_dt = None
+            self.lambda_init_value = None
+            self.rho_init_value = None
 
     def _compute_global_loss(self, malicious_update: torch.Tensor, 
                             selected_benign: List[torch.Tensor],
@@ -1653,21 +1673,26 @@ class AttackerClient(Client):
                     self.rho_dt = torch.tensor(new_rho, requires_grad=False)
             
             # ============================================================
-            # 可选: 软约束检查（如果需要，可以进行轻微投影）
-            # 在Lagrangian机制下，通常不需要硬投影，但如果严重违反可以轻微调整
+            # 修改4: 在优化循环内添加约束保障机制（Lagrangian框架内）
+            # 在Lagrangian机制下，添加轻度投影作为保障，避免优化路径偏离太远
             # ============================================================
             if not self.use_lagrangian_dual and self.d_T is not None:
-                # 硬约束投影（原有逻辑）
+                # 硬约束投影（原有逻辑，不使用Lagrangian时的行为）
                 dist_to_global = torch.norm(proxy_param).item()
                 if dist_to_global > self.d_T:
                     # Project to constraint set: scale down to satisfy d ≤ d_T
                     proxy_param.data = proxy_param.data * (self.d_T / dist_to_global)
             elif self.use_lagrangian_dual and self.d_T is not None:
-                # 可选: 如果使用Lagrangian但严重违反，可以轻微投影以防止数值问题
-                # 这不是论文要求的，但可以防止极端情况
+                # 修改4: Lagrangian机制下的约束保障
+                # 在优化循环内检查，如果违反超过20%立即轻微投影，避免路径偏离太远
+                # 这样既保持Lagrangian的灵活性，又确保约束得到及时保障
                 dist_to_global = torch.norm(proxy_param).item()
-                if dist_to_global > self.d_T * 1.5:  # 只对严重违反的情况（超过50%）
-                    scale_factor = (self.d_T * 1.2) / dist_to_global
+                violation_ratio = (dist_to_global - self.d_T) / self.d_T if self.d_T > 0 else 0.0
+                
+                if violation_ratio > 0.20:  # 违反超过20%时进行轻微投影
+                    # 轻微投影到 1.1 × d_T，留出10%余量，允许Lagrangian继续优化
+                    target_dist = self.d_T * 1.1
+                    scale_factor = target_dist / dist_to_global
                     proxy_param.data = proxy_param.data * scale_factor
         
         malicious_update = proxy_param.detach()
@@ -1687,21 +1712,34 @@ class AttackerClient(Client):
         # STEP 8: Final constraint check (根据是否使用Lagrangian)
         # ============================================================
         if self.use_lagrangian_dual:
-            # Lagrangian机制：约束可能轻微违反，这是正常的
-            # 根据论文，Lagrangian机制允许轻微的约束违反，由乘数来控制
+            # 修改8: 改进最终约束检查 - 分级投影策略（Lagrangian框架内）
+            # 根据违反程度采用不同策略，平衡灵活性和约束满足性
             if self.d_T is not None:
                 dist_to_global = torch.norm(malicious_update).item()
                 constraint_violation = max(0, dist_to_global - self.d_T)
+                violation_ratio = constraint_violation / self.d_T if self.d_T > 0 else 0.0
+                
                 if constraint_violation > 0:
                     lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
                     print(f"    [Attacker {self.client_id}] Constraint(4b) violation: {constraint_violation:.6f} "
-                          f"(λ={lambda_val:.4f})")
-                    # 可选: 如果严重违反，可以进行轻微投影
-                    # 但通常Lagrangian机制应该能控制约束
-                    if constraint_violation > self.d_T * 0.3:  # 如果违反超过30%
-                        scale_factor = (self.d_T * 1.1) / dist_to_global
+                          f"(λ={lambda_val:.4f}, violation={violation_ratio*100:.1f}%)")
+                    
+                    # 分级投影策略：
+                    if violation_ratio > 0.30:  # 严重违反（>30%）
+                        # 严格投影到 d_T，完全满足约束
+                        scale_factor = self.d_T / dist_to_global
                         malicious_update = malicious_update * scale_factor
-                        print(f"      Applied soft projection due to severe violation")
+                        print(f"      Applied strict projection (violation >30%): scaled to d_T")
+                    elif violation_ratio > 0.15:  # 中度违反（15-30%）
+                        # 轻微投影到 1.05×d_T，允许5%余量，保持一定灵活性
+                        target_dist = self.d_T * 1.05
+                        scale_factor = target_dist / dist_to_global
+                        malicious_update = malicious_update * scale_factor
+                        print(f"      Applied mild projection (violation 15-30%): scaled to 1.05×d_T")
+                    else:  # 轻微违反（<15%）
+                        # 允许轻微违反，利用Lagrangian机制的灵活性
+                        # 不进行投影，由乘数来控制
+                        print(f"      Allowed minor violation (violation <15%): kept as is")
         else:
             # 硬约束投影机制（原有逻辑）
             if self.d_T is not None:

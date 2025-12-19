@@ -690,8 +690,8 @@ def main():
                                       # If True, uses Lagrangian penalty terms (per paper eq:lagrangian and eq:wprime_sub)
         'lambda_init': 0.1,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
         'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
-        'lambda_lr': 0.01,   # Learning rate for λ(t) update (subgradient step size)
-        'rho_lr': 0.01,      # Learning rate for ρ(t) update (subgradient step size)
+        'lambda_lr': 0.001,  # Learning rate for λ(t) update (subgradient step size) - 修改3: 从0.01减小到0.001以提升稳定性
+        'rho_lr': 0.001,      # Learning rate for ρ(t) update (subgradient step size)
         # 'attacker_claimed_data_size': None,  # If None, uses actual assigned data size (recommended for realistic scenario)
             # If set to a value, overrides actual data size (for attack experiments where attacker claims more data)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size (recommended)
