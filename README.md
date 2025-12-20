@@ -3,13 +3,15 @@
 ## File Structure
 
 ```python
-├── README.md # Project documentation
-├── requirements.txt # Dependencies for the project
-├── client.py # Client logic for user interaction
-├── data_loader.py # Data loading and preprocessing
-├── main.py # Main script for training and model execution
-├── models.py # Learning model definitions
-└── server.py # Server script for model deployment
+├── README.md                 # Project documentation (this file)
+├── requirements.txt          # Dependencies for the project
+├── GRMP_Attack_Colab.ipynb   # Google Colab notebook for interactive execution
+├── client.py                 # Client logic for user interaction
+├── data_loader.py            # Data loading and preprocessing
+├── main.py                   # Main experiment script: configures and runs FL experiments
+├── models.py                 # Learning model definitions
+├── server.py                 # Server implementation: model aggregation and defense mechanisms
+└── visualization.py          # Visualization module: generates Figure
 ```
 
 ## Dataset
