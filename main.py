@@ -626,7 +626,7 @@ def main():
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
-        'num_rounds': 100,  # Total number of federated learning rounds (int)
+        'num_rounds': 50,  # Total number of federated learning rounds (int)
         
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
@@ -693,7 +693,7 @@ def main():
         'lambda_init': 0.1,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
         'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
         'lambda_lr': 0.01,  # Learning rate for λ(t) update (subgradient step size)
-        'rho_lr': 0.01,      # Learning rate for ρ(t) update (subgradient step size)
+        'rho_lr': 0.001,      # Learning rate for ρ(t) update (subgradient step size)
         # 'attacker_claimed_data_size': None,  # If None, uses actual assigned data size (recommended for realistic scenario)
         # If set to a value, overrides actual data size (for attack experiments where attacker claims more data)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size (recommended)
