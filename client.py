@@ -267,6 +267,7 @@ class AttackerClient(Client):
         self.vgae = None
         self.vgae_optimizer = None
         self.benign_updates = []
+        self.benign_update_client_ids = []  # Track client_id for each benign update to enable weighted average calculation
         self.feature_indices = None
         
         # Data-agnostic attack: no local data usage
@@ -329,7 +330,7 @@ class AttackerClient(Client):
         self.set_round(round_num)
         # Data-agnostic attacker keeps an empty loader
         self.data_loader = self.data_manager.get_empty_loader()
-        
+
         # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
         # Reason: Prevent λ and ρ from accumulating across rounds, which causes numerical instability and optimization imbalance
         # Optimization: Use adaptive λ initialization based on previous round's violation to provide better starting point
@@ -352,11 +353,25 @@ class AttackerClient(Client):
                 self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
             self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
 
-    def receive_benign_updates(self, updates: List[torch.Tensor]):
-        """Receive updates from benign clients."""
+    def receive_benign_updates(self, updates: List[torch.Tensor], client_ids: Optional[List[int]] = None):
+        """
+        Receive updates from benign clients.
+        
+        Args:
+            updates: List of benign client updates
+            client_ids: Optional list of client IDs corresponding to each update.
+                       If None, indices will be used as client IDs (fallback for backward compatibility)
+        """
         # Store detached copies on CPU to save GPU memory
         # Updates will be moved to GPU only when needed for VGAE processing
         self.benign_updates = [u.detach().clone().cpu() for u in updates]
+        # Store corresponding client IDs for weighted average calculation in constraint (4c)
+        if client_ids is not None:
+            self.benign_update_client_ids = client_ids.copy()
+        else:
+            # Fallback: use indices as client IDs (for backward compatibility)
+            # Note: This may not be accurate, but allows code to work without server changes
+            self.benign_update_client_ids = list(range(len(updates)))
 
     def _select_benign_subset(self) -> List[torch.Tensor]:
         """
@@ -795,7 +810,7 @@ class AttackerClient(Client):
                     self._ensure_model_on_device(self.model, target_device)
             except StopIteration:
                 pass
-            
+
             total_loss = 0.0
             batches = 0
             
@@ -907,12 +922,12 @@ class AttackerClient(Client):
                         self._ensure_model_on_device(self.model, target_device)
                         self.model.to(target_device)
 
-                        logits = stateless.functional_call(
-                            self.model,
-                            param_dict,
-                            args=(),
-                            kwargs={'input_ids': input_ids, 'attention_mask': attention_mask}
-                        )
+            logits = stateless.functional_call(
+                self.model,
+                param_dict,
+                args=(),
+                kwargs={'input_ids': input_ids, 'attention_mask': attention_mask}
+            )
                     except (RuntimeError, KeyError) as e:
                         # If stateless.functional_call fails (e.g., parameter name mismatch in PEFT),
                         # try using the model directly with temporarily set parameters
@@ -1034,13 +1049,13 @@ class AttackerClient(Client):
                             # Return zero loss as last resort
                             return torch.tensor(0.0, device=target_device)
 
-                ce_loss = F.cross_entropy(logits, labels)
-                total_loss = total_loss + ce_loss
-                batches += 1
-                if batches >= max_batches:
-                    break
+            ce_loss = F.cross_entropy(logits, labels)
+            total_loss = total_loss + ce_loss
+            batches += 1
+            if batches >= max_batches:
+                break
 
-            if batches == 0:
+        if batches == 0:
                 result = torch.tensor(0.0, device=self.device)
             else:
                 result = total_loss / batches
@@ -1265,7 +1280,7 @@ class AttackerClient(Client):
         # Check if we have total_data_size for full formula calculation
         if self.total_data_size is None or len(self.benign_data_sizes) == 0:
             # Fallback: use proxy loss only (old behavior)
-            proxy_loss = self._proxy_global_loss(malicious_update, max_batches=self.proxy_max_batches_opt, skip_dim_check=False)
+        proxy_loss = self._proxy_global_loss(malicious_update, max_batches=self.proxy_max_batches_opt, skip_dim_check=False)
             return proxy_loss
         
         # Paper Formula (3): Full calculation with weights
@@ -1505,8 +1520,8 @@ class AttackerClient(Client):
         # Generate perturbation with client_id and select_idx dependent scale
         # Scale increases with client_id and select_idx to ensure different perturbations
         perturbation_scale = self.gsp_perturbation_scale * (self.client_id + 1) * (1.0 + 0.1 * select_idx)
-        perturbation = torch.randn_like(gsp_attack) * perturbation_scale
-        gsp_attack = gsp_attack + perturbation
+            perturbation = torch.randn_like(gsp_attack) * perturbation_scale
+            gsp_attack = gsp_attack + perturbation
         
         # Restore random state
         torch.set_rng_state(rng_state_before)
@@ -1614,7 +1629,7 @@ class AttackerClient(Client):
         # Create malicious_update on CPU to save GPU memory
         # poisoned_update is likely on CPU, but ensure we create on CPU
         if poisoned_update.device.type == 'cuda':
-            malicious_update = torch.zeros_like(poisoned_update)
+        malicious_update = torch.zeros_like(poisoned_update)
         else:
             malicious_update = torch.zeros_like(poisoned_update, device='cpu')
         total_dim = int(malicious_update.shape[0])  # Convert to Python int
@@ -1656,7 +1671,7 @@ class AttackerClient(Client):
                     if gsp_attack_reduced.device.type == 'cuda':
                         malicious_update = gsp_attack_reduced.cpu()
                     else:
-                        malicious_update = gsp_attack_reduced
+                    malicious_update = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {total_dim}, using zeros")
@@ -1775,11 +1790,65 @@ class AttackerClient(Client):
         
         if self.gamma is not None and len(selected_benign) > 0:
             # Compute constraint (4c) value once before loop (constant value)
+            # Paper constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+            # where w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) is the weighted mean of ALL benign clients
+            # (not just selected ones)
+            
+            # Step 1: Compute weighted mean of ALL benign clients: w̄_i(t) = Σ (D_i/D) w_i(t)
+            # Note: This uses all benign_updates, not just selected_benign
+            if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
+                D_total = float(self.total_data_size)
+                # Compute weighted sum of all benign updates
+                benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
+                benign_stack = torch.stack(benign_updates_gpu)
+                weighted_mean = torch.zeros_like(benign_stack[0])
+                
+                for idx, benign_update in enumerate(self.benign_updates):
+                    # Get client_id for this update
+                    if idx < len(self.benign_update_client_ids):
+                        client_id = self.benign_update_client_ids[idx]
+                        # Get data size for this client
+                        D_i = self.benign_data_sizes.get(client_id, 1.0)
+                        weight = D_i / D_total
+                    else:
+                        # Fallback: use equal weight if client_id not available
+                        weight = 1.0 / len(self.benign_updates)
+                    
+                    # Add weighted update
+                    weighted_mean = weighted_mean + weight * benign_update.to(self.device)
+                
+                # Clean up temporary GPU references
+                del benign_updates_gpu, benign_stack
+                
+            else:
+                # Fallback: use simple mean if data sizes not available
+                sel_benign_gpu = [u.to(self.device) for u in selected_benign]
+                sel_stack = torch.stack(sel_benign_gpu)
+                weighted_mean = sel_stack.mean(dim=0)
+                del sel_benign_gpu, sel_stack
+            
+            # Step 2: Compute distances d(w_i(t), w̄_i(t)) for each selected benign client
             sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-            sel_stack = torch.stack(sel_benign_gpu)
-            sel_mean = sel_stack.mean(dim=0)
-            distances = torch.norm(sel_stack - sel_mean, dim=1)
-            agg_dist = distances.sum()  # Σ β'_{i,j}(t)^* d(...)
+            distances = []
+            for idx, benign_update in enumerate(selected_benign):
+                # Get the index in beta_selection to find original client_id
+                if idx < len(beta_selection):
+                    original_idx = beta_selection[idx]
+                    # Get distance: d(w_i(t), w̄_i(t))
+                    dist = torch.norm(benign_update.to(self.device) - weighted_mean)
+                    distances.append(dist)
+                else:
+                    # Fallback: compute distance anyway
+                    dist = torch.norm(benign_update.to(self.device) - weighted_mean)
+                    distances.append(dist)
+            
+            # Step 3: Sum distances: Σ β'_{i,j}(t) d(w_i(t), w̄_i(t))
+            if len(distances) > 0:
+                distances_tensor = torch.stack(distances)
+                agg_dist = distances_tensor.sum()  # Σ β'_{i,j}(t)^* d(...)
+            else:
+                agg_dist = torch.tensor(0.0, device=self.device)
+            
             constraint_c_value_for_update = agg_dist.item()
             
             # For Lagrangian mode, cache the base term on GPU to avoid recomputation
@@ -1787,7 +1856,9 @@ class AttackerClient(Client):
                 constraint_c_term_base = agg_dist  # Keep on GPU for reuse in loop
             else:
                 # Hard constraint mode: release GPU memory immediately
-                del sel_benign_gpu, sel_stack, sel_mean, distances
+                del sel_benign_gpu, distances, weighted_mean
+                if 'distances_tensor' in locals():
+                    del distances_tensor
                 torch.cuda.empty_cache()
         
         # OPTIMIZATION 5: Cache Lagrangian multipliers on GPU before loop
@@ -1947,7 +2018,7 @@ class AttackerClient(Client):
                 # subgradient = (constraint value - bound)
                 # When constraint is violated (constraint value > bound), subgradient > 0, λ increases to penalize violation
                 
-                if self.d_T is not None:
+            if self.d_T is not None:
                     # Calculate real distance after step() (proxy_param has been updated)
                     # Use real distance calculation according to paper Constraint (4b)
                     current_dist_tensor = self._compute_real_distance_to_global(
@@ -2024,7 +2095,7 @@ class AttackerClient(Client):
         if self.use_lagrangian_dual:
             # Final constraint check: Graded projection strategy (within Lagrangian framework)
             # Use different strategies based on violation degree to balance flexibility and constraint satisfaction
-            if self.d_T is not None:
+        if self.d_T is not None:
                 # Use real distance calculation according to paper Constraint (4b)
                 dist_to_global_tensor = self._compute_real_distance_to_global(
                     malicious_update,
@@ -2092,14 +2163,14 @@ class AttackerClient(Client):
             constraint_c_value = torch.tensor(constraint_c_value_for_update, device=self.device)
         else:
             # Hard constraint mode: compute here (only needed for logging)
-            constraint_c_value = torch.tensor(0.0, device=self.device)
-            if self.gamma is not None and len(selected_benign) > 0:
+        constraint_c_value = torch.tensor(0.0, device=self.device)
+        if self.gamma is not None and len(selected_benign) > 0:
                 # Move selected_benign to GPU temporarily for computation
                 sel_benign_gpu = [u.to(self.device) for u in selected_benign]
                 sel_stack = torch.stack(sel_benign_gpu)
-                sel_mean = sel_stack.mean(dim=0)
-                distances = torch.norm(sel_stack - sel_mean, dim=1)
-                constraint_c_value = distances.sum()  # This returns a scalar tensor (0-dim), safe for .item()
+            sel_mean = sel_stack.mean(dim=0)
+            distances = torch.norm(sel_stack - sel_mean, dim=1)
+            constraint_c_value = distances.sum()  # This returns a scalar tensor (0-dim), safe for .item()
                 # Clean up GPU references
                 del sel_benign_gpu, sel_stack, sel_mean, distances
         

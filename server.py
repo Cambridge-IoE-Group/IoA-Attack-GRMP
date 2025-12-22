@@ -528,10 +528,12 @@ class Server:
         # Phase 3: Attacker Camouflage
         print("\n🎭 Phase 3: Attacker Camouflage")
         benign_updates = []
+        benign_client_ids = []
         for client_id, update in initial_updates.items():
             client = self.clients[client_id]
             if not getattr(client, 'is_attacker', False):
                 benign_updates.append(update)
+                benign_client_ids.append(client_id)
         
         print(f"  Captured {len(benign_updates)} benign updates for camouflage.")
         
@@ -540,7 +542,7 @@ class Server:
             client = self.clients[client_id]
             if getattr(client, 'is_attacker', False):
                 print(f"  ⚠️ Triggering camouflage logic for Client {client_id}")
-                client.receive_benign_updates(benign_updates)
+                client.receive_benign_updates(benign_updates, client_ids=benign_client_ids)
                 final_updates[client_id] = client.camouflage_update(update)
             else:
                 final_updates[client_id] = update
