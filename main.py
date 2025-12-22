@@ -620,7 +620,7 @@ def main():
     config = {
         # ========== Experiment Configuration ==========
         'experiment_name': 'vgae_grmp_attack',  # Name for result files and logs
-        'seed': 1,  # Random seed for reproducibility (int), 42 is the default
+        'seed': 42,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
         'num_clients': 10,  # Total number of federated learning clients (int)
@@ -657,7 +657,6 @@ def main():
         # Model configuration
         'model_name': 'distilbert-base-uncased',  # Model name or path
         'num_labels': 4,  # Number of classification labels
-
 
         # ========== Attack Configuration ==========
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
