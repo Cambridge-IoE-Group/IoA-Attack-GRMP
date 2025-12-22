@@ -1955,7 +1955,6 @@ class AttackerClient(Client):
                 rho_dt_tensor = self.rho_dt  # Direct use, no conversion needed
                 
                 # Constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-                # Paper formula eq:wprime_sub: -λ d(w'_j(t), w'_g(t))
                 # Paper Constraint (4b): d(w'_j, w'_g) = ||w'_j - w'_g||
                 # Use real distance calculation according to paper Formula (2)
                 dist_to_global_for_objective = self._compute_real_distance_to_global(
@@ -1963,10 +1962,16 @@ class AttackerClient(Client):
                     selected_benign,
                     beta_selection
                 )
-                constraint_b_term = -lambda_dt_tensor * dist_to_global_for_objective
+                # Lagrangian method: For constraint g(x) ≤ 0, Lagrangian is L = f(x) - λ g(x)
+                # For constraint (4b): d(w'_j, w'_g) - d_T ≤ 0, so L = F(w'_g) - λ (d(w'_j, w'_g) - d_T)
+                # Converting to minimization: minimize -L = -F(w'_g) + λ (d(w'_j, w'_g) - d_T)
+                # Since λ d_T is constant, we use: minimize -F(w'_g) + λ d(w'_j, w'_g)
+                constraint_b_term = lambda_dt_tensor * dist_to_global_for_objective
                 
                 # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-                # Paper formula eq:wprime_sub: +ρ Σ_{i=1}^I β'_{i,j}(t)^* d(w_i(t), w̄_i(t))
+                # For constraint (4c): Σ(...) - Γ ≤ 0, so L = F(w'_g) - ρ (Σ(...) - Γ)
+                # Converting to minimization: minimize -L = -F(w'_g) + ρ (Σ(...) - Γ)
+                # Since ρ Γ is constant, we use: minimize -F(w'_g) + ρ Σ(...)
                 # OPTIMIZATION 2: Use cached constraint (4c) value (computed before loop)
                 constraint_c_term = torch.tensor(0.0, device=self.device)
                 if constraint_c_term_base is not None:
@@ -1976,9 +1981,11 @@ class AttackerClient(Client):
                 # ============================================================
                 # Build Lagrangian objective function (paper formula eq:wprime_sub)
                 # ============================================================
-                # w'_j(t)^* = argmax_{w'_j(t)} {F(w'_g(t)) - λ d(...) + ρ Σ(...)}
-                # Convert to minimization: minimize {-F(w'_g(t)) + λ d(...) - ρ Σ(...)}
-                lagrangian_objective = -global_loss + constraint_b_term - constraint_c_term
+                # Paper: maximize F(w'_g(t)) subject to constraints
+                # Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)
+                # Converting to minimization: minimize -L = -F(w'_g) + λ d(w'_j, w'_g) + ρ Σ(...)
+                # (constant terms λ d_T and ρ Γ are omitted as they don't affect optimization direction)
+                lagrangian_objective = -global_loss + constraint_b_term + constraint_c_term
                 
                 # ============================================================
                 # ============================================================
