@@ -292,6 +292,7 @@ class AttackerClient(Client):
         # Save initial values for reset in prepare_for_round (Modification 1 and 2)
         self.lambda_init_value = None  # Save initial λ value for reset in prepare_for_round
         self.rho_init_value = None     # Save initial ρ value for reset in prepare_for_round
+        self.enable_final_projection = True  # Whether to apply final projection after optimization (only for Lagrangian mode)
         
         # Track violation history for adaptive λ initialization (Optimization)
         self.last_violation = None  # Last round's constraint violation value (distance, not violation amount)
@@ -1220,7 +1221,8 @@ class AttackerClient(Client):
                               lambda_init: float = 0.1,
                               rho_init: float = 0.1,
                               lambda_lr: float = 0.01,
-                              rho_lr: float = 0.01):
+                              rho_lr: float = 0.01,
+                              enable_final_projection: bool = True):
         """
         Set Lagrangian Dual parameters (initialized according to paper Algorithm 1)
         
@@ -1235,6 +1237,8 @@ class AttackerClient(Client):
             rho_init: Initial ρ(1) value (≥0, per paper Algorithm 1)
             lambda_lr: Learning rate for λ(t) update (subgradient step size)
             rho_lr: Learning rate for ρ(t) update (subgradient step size)
+            enable_final_projection: Whether to apply final projection after optimization (only for Lagrangian mode)
+                                   If False, completely relies on Lagrangian mechanism (no final projection)
         
         Modification 2: Save initial values for reset in prepare_for_round
         """
@@ -1248,12 +1252,14 @@ class AttackerClient(Client):
             self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
             self.lambda_lr = lambda_lr
             self.rho_lr = rho_lr
+            self.enable_final_projection = enable_final_projection
         else:
             # Hard constraint projection mode
             self.lambda_dt = None
             self.rho_dt = None
             self.lambda_init_value = None
             self.rho_init_value = None
+            self.enable_final_projection = True  # Default to True for hard constraint mode (always applies projection)
 
     def _compute_global_loss(self, malicious_update: torch.Tensor, 
                             selected_benign: List[torch.Tensor],
@@ -2103,25 +2109,30 @@ class AttackerClient(Client):
                     print(f"    [Attacker {self.client_id}] Constraint(4b) violation: {constraint_violation:.6f} "
                           f"(λ={lambda_val:.4f}, violation={violation_ratio*100:.1f}%)")
                     
-                    # Graded projection strategy (improved to allow Lagrangian mechanism to work):
-                    # Increased threshold from 30% to 100% to reduce frequent strict projection
-                    # This allows Lagrangian multipliers (λ) to effectively control violations
-                    if violation_ratio > 1.00:  # Severe violation (>100%)
-                        # Strict projection to d_T, completely satisfy constraint
-                        # Only applied when violation is extremely severe to preserve optimization stability
-                        scale_factor = self.d_T / dist_to_global
-                        malicious_update = malicious_update * scale_factor
-                        print(f"      Applied strict projection (violation >100%): scaled to d_T")
-                    elif violation_ratio > 0.50:  # Moderate violation (50-100%)
-                        # Mild projection to 1.1×d_T, allowing 10% margin for Lagrangian flexibility
-                        target_dist = self.d_T * 1.1
-                        scale_factor = target_dist / dist_to_global
-                        malicious_update = malicious_update * scale_factor
-                        print(f"      Applied mild projection (violation 50-100%): scaled to 1.1×d_T")
-                    else:  # Minor violation (<50%)
-                        # Allow minor violation, leverage Lagrangian mechanism flexibility
-                        # No projection, controlled by multipliers (λ, ρ)
-                        print(f"      Allowed minor violation (violation <50%): kept as is, controlled by Lagrangian multipliers")
+                    # Check if final projection is enabled
+                    if self.enable_final_projection:
+                        # Graded projection strategy (improved to allow Lagrangian mechanism to work):
+                        # Increased threshold from 30% to 100% to reduce frequent strict projection
+                        # This allows Lagrangian multipliers (λ) to effectively control violations
+                        if violation_ratio > 1.00:  # Severe violation (>100%)
+                            # Strict projection to d_T, completely satisfy constraint
+                            # Only applied when violation is extremely severe to preserve optimization stability
+                            scale_factor = self.d_T / dist_to_global
+                            malicious_update = malicious_update * scale_factor
+                            print(f"      Applied strict projection (violation >100%): scaled to d_T")
+                        elif violation_ratio > 0.50:  # Moderate violation (50-100%)
+                            # Mild projection to 1.1×d_T, allowing 10% margin for Lagrangian flexibility
+                            target_dist = self.d_T * 1.1
+                            scale_factor = target_dist / dist_to_global
+                            malicious_update = malicious_update * scale_factor
+                            print(f"      Applied mild projection (violation 50-100%): scaled to 1.1×d_T")
+                        else:  # Minor violation (<50%)
+                            # Allow minor violation, leverage Lagrangian mechanism flexibility
+                            # No projection, controlled by multipliers (λ, ρ)
+                            print(f"      Allowed minor violation (violation <50%): kept as is, controlled by Lagrangian multipliers")
+                    else:
+                        # Final projection is disabled: completely rely on Lagrangian mechanism
+                        print(f"      Final projection disabled: relying entirely on Lagrangian mechanism (violation={violation_ratio*100:.1f}%)")
         else:
             # Hard constraint projection mechanism (original logic)
             if self.d_T is not None:
