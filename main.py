@@ -661,7 +661,7 @@ def main():
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
-        'd_T': 1.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
+        'd_T': 2.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
         'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         
         # ========== VGAE Training Parameters ==========
@@ -680,8 +680,8 @@ def main():
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 30,  # Number of optimization steps for attack objective (int)
-        'gsp_perturbation_scale': 0.1,  # Perturbation scale for GSP attack diversity (float)
-        'opt_init_perturbation_scale': 0.05,  # Perturbation scale for optimization initialization (float)
+        'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
+        'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         
         # ========== Lagrangian Dual Parameters ==========
