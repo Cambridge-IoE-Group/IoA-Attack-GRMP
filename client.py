@@ -396,11 +396,29 @@ class AttackerClient(Client):
         if not self.benign_updates:
             return []
         
-        # Compute distances from mean for all benign updates
+        # Compute distances from weighted mean for all benign updates
+        # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean, not simple mean)
         # Move to GPU only for computation, then back to CPU
         benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
         benign_stack = torch.stack([u.detach() for u in benign_updates_gpu])
-        benign_mean = benign_stack.mean(dim=0)
+        
+        # Compute weighted mean: w̄_i(t) = Σ (D_i/D) w_i(t)
+        if self.total_data_size is not None and len(self.benign_data_sizes) > 0 and len(self.benign_update_client_ids) > 0:
+            D_total = float(self.total_data_size)
+            benign_mean = torch.zeros_like(benign_stack[0])
+            for idx, benign_update in enumerate(self.benign_updates):
+                if idx < len(self.benign_update_client_ids):
+                    client_id = self.benign_update_client_ids[idx]
+                    D_i = self.benign_data_sizes.get(client_id, 1.0)
+                    weight = D_i / D_total
+                else:
+                    # Fallback: use equal weight if client_id not available
+                    weight = 1.0 / len(self.benign_updates)
+                benign_mean = benign_mean + weight * benign_update.to(self.device)
+        else:
+            # Fallback: use simple mean if data sizes not available
+            benign_mean = benign_stack.mean(dim=0)
+        
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
         # Clean up GPU references immediately
         del benign_updates_gpu, benign_stack, benign_mean
@@ -460,11 +478,29 @@ class AttackerClient(Client):
         if not self.benign_updates:
             return []
         
-        # Compute distances from mean for all benign updates
+        # Compute distances from weighted mean for all benign updates
+        # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean, not simple mean)
         # Move to GPU only for computation, then back to CPU
         benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
         benign_stack = torch.stack([u.detach() for u in benign_updates_gpu])
-        benign_mean = benign_stack.mean(dim=0)
+        
+        # Compute weighted mean: w̄_i(t) = Σ (D_i/D) w_i(t)
+        if self.total_data_size is not None and len(self.benign_data_sizes) > 0 and len(self.benign_update_client_ids) > 0:
+            D_total = float(self.total_data_size)
+            benign_mean = torch.zeros_like(benign_stack[0])
+            for idx, benign_update in enumerate(self.benign_updates):
+                if idx < len(self.benign_update_client_ids):
+                    client_id = self.benign_update_client_ids[idx]
+                    D_i = self.benign_data_sizes.get(client_id, 1.0)
+                    weight = D_i / D_total
+                else:
+                    # Fallback: use equal weight if client_id not available
+                    weight = 1.0 / len(self.benign_updates)
+                benign_mean = benign_mean + weight * benign_update.to(self.device)
+        else:
+            # Fallback: use simple mean if data sizes not available
+            benign_mean = benign_stack.mean(dim=0)
+        
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
         # Clean up GPU references immediately
         del benign_updates_gpu, benign_stack, benign_mean
@@ -2163,16 +2199,42 @@ class AttackerClient(Client):
             constraint_c_value = torch.tensor(constraint_c_value_for_update, device=self.device)
         else:
             # Hard constraint mode: compute here (only needed for logging)
+            # Use the same calculation as in Lagrangian mode for consistency
             constraint_c_value = torch.tensor(0.0, device=self.device)
             if self.gamma is not None and len(selected_benign) > 0:
-                # Move selected_benign to GPU temporarily for computation
-                sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-                sel_stack = torch.stack(sel_benign_gpu)
-                sel_mean = sel_stack.mean(dim=0)
-                distances = torch.norm(sel_stack - sel_mean, dim=1)
-                constraint_c_value = distances.sum()  # This returns a scalar tensor (0-dim), safe for .item()
-                # Clean up GPU references
-                del sel_benign_gpu, sel_stack, sel_mean, distances
+                # Compute constraint (4c) value using weighted mean of ALL benign clients
+                # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean of ALL benign clients)
+                if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
+                    D_total = float(self.total_data_size)
+                    # Compute weighted mean of ALL benign clients
+                    benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
+                    benign_stack = torch.stack(benign_updates_gpu)
+                    weighted_mean = torch.zeros_like(benign_stack[0])
+                    for idx, benign_update in enumerate(self.benign_updates):
+                        if idx < len(self.benign_update_client_ids):
+                            client_id = self.benign_update_client_ids[idx]
+                            D_i = self.benign_data_sizes.get(client_id, 1.0)
+                            weight = D_i / D_total
+                        else:
+                            weight = 1.0 / len(self.benign_updates)
+                        weighted_mean = weighted_mean + weight * benign_update.to(self.device)
+                    
+                    # Compute distances d(w_i(t), w̄_i(t)) for selected benign clients
+                    sel_benign_gpu = [u.to(self.device) for u in selected_benign]
+                    distances = [torch.norm(benign_update - weighted_mean) for benign_update in sel_benign_gpu]
+                    constraint_c_value = torch.stack(distances).sum()
+                    # Clean up GPU references
+                    del benign_updates_gpu, benign_stack, weighted_mean, sel_benign_gpu, distances
+                else:
+                    # Fallback: use simple mean if data sizes not available
+                    sel_benign_gpu = [u.to(self.device) for u in selected_benign]
+                    sel_stack = torch.stack(sel_benign_gpu)
+                    sel_mean = sel_stack.mean(dim=0)
+                    distances = torch.norm(sel_stack - sel_mean, dim=1)
+                    constraint_c_value = distances.sum()
+                    # Clean up GPU references
+                    del sel_benign_gpu, sel_stack, sel_mean, distances
+                torch.cuda.empty_cache()
         
         malicious_norm = torch.norm(malicious_update).item()
         log_msg = f"    [Attacker {self.client_id}] GRMP Attack: " \
