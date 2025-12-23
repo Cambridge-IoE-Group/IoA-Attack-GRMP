@@ -146,7 +146,6 @@ def setup_experiment(config):
         tolerance_factor=config['tolerance_factor'],
         d_T=config['d_T'],
         gamma=config['gamma'],
-        similarity_alpha=config['similarity_alpha'],
         defense_high_rejection_threshold=config['defense_high_rejection_threshold'],
         defense_threshold_decay=config['defense_threshold_decay']
     )
@@ -681,8 +680,8 @@ def main():
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 30,  # Number of optimization steps for attack objective (int)
-        'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
-        'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
+        'gsp_perturbation_scale': 0.1,  # Perturbation scale for GSP attack diversity (float)
+        'opt_init_perturbation_scale': 0.05,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         
         # ========== Lagrangian Dual Parameters ==========
@@ -717,7 +716,6 @@ def main():
         'defense_threshold': 0.1,  # Base threshold for defense mechanism (float, lower = more strict)
             # Set to 0 for attack baseline experiment. Baseline 0.3
         'tolerance_factor': 3.0,  # Tolerance factor for defense mechanism (float, higher = more lenient). Baseline experiment uses 3.0.
-        'similarity_alpha': 0.5,  # Weight for pairwise similarities in mixed similarity computation (float, 0.0-1.0)
         'defense_high_rejection_threshold': 0.4,  # High rejection rate threshold for adaptive defense (float, 0.0-1.0)
         'defense_threshold_decay': 0.9,  # Decay factor for defense threshold when high rejection detected (float, 0.0-1.0)
         

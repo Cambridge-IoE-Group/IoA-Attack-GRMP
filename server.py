@@ -14,7 +14,7 @@ class Server:
     """Server class for federated learning with GRMP attack defense"""
     def __init__(self, global_model: nn.Module, test_loader,
                 enable_defense=True, defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2,
-                d_T=0.5, gamma=10.0, similarity_alpha=0.7,
+                d_T=0.5, gamma=10.0,
                 defense_high_rejection_threshold=0.4, defense_threshold_decay=0.9):
         self.global_model = copy.deepcopy(global_model)
         self.test_loader = test_loader
@@ -38,7 +38,6 @@ class Server:
         # Formula 4 constraint parameters (passed to attackers)
         self.d_T = d_T  # Distance threshold for constraint (4b)
         self.gamma = gamma  # Upper bound for constraint (4c)
-        self.similarity_alpha = similarity_alpha  # Weight for pairwise similarities
         
         # Adaptive defense parameters
         self.defense_high_rejection_threshold = defense_high_rejection_threshold  # High rejection rate threshold
@@ -70,57 +69,42 @@ class Server:
                 client.optimizer = None
 
     def _compute_similarities(self, updates: List[torch.Tensor]) -> np.ndarray:
-        """Compute mixed similarities - combining pairwise similarities and similarities with the mean."""
+        """
+        Compute standard cosine similarities between each update and the mean update.
+        
+        Standard definition (used in FL defense literature):
+            sim_i = cosine_similarity(w_i, mean(w_1, w_2, ..., w_n))
+        
+        This is the standard cosine similarity metric used in federated learning
+        defense mechanisms (e.g., Krum, Trimmed Mean, Median).
+        
+        Args:
+            updates: List of client update tensors
+            
+        Returns:
+            numpy array of cosine similarities (one per client)
+        """
         n_updates = len(updates)
 
-        print("  📊 Using mixed similarity computation")
+        print("  📊 Computing standard cosine similarities")
 
-        # Step 1: Compute pairwise similarities
-        # OPTIMIZATION 1: Use symmetry to reduce computation by ~50%
-        # cosine_similarity(a, b) == cosine_similarity(b, a), so we only need upper triangle
-        pairwise_sims_matrix = {}  # Store (i, j): sim_value for reuse
-        pairwise_sims = []
-        
-        for i in range(n_updates):
-            other_sims = []
-            # Compute similarities with j > i (upper triangle)
-            for j in range(i + 1, n_updates):
-                sim = torch.cosine_similarity(
-                    updates[i].unsqueeze(0),
-                    updates[j].unsqueeze(0)
-                ).item()
-                pairwise_sims_matrix[(i, j)] = sim
-                pairwise_sims_matrix[(j, i)] = sim  # Use symmetry
-                other_sims.append(sim)
-            
-            # For j < i, use already computed symmetric values
-            for j in range(i):
-                other_sims.append(pairwise_sims_matrix[(i, j)])
-            
-            # Use average instead of median (more lenient)
-            avg_sim = np.mean(other_sims) if other_sims else 0
-            pairwise_sims.append(avg_sim)
-
-        # Step 2: Compute similarities with the mean update
+        # Compute mean update
         avg_update = torch.stack(updates).mean(dim=0)
-        avg_sims = []
+        
+        # Compute standard cosine similarity for each update
+        # Standard definition: cosine_similarity(w_i, mean(all_updates))
+        similarities = []
         for update in updates:
             sim = torch.cosine_similarity(
                 update.unsqueeze(0),
                 avg_update.unsqueeze(0)
             ).item()
-            avg_sims.append(sim)
-
-        # Step 3: Combine both similarities (weighted average)
-        similarities = []
-        for i in range(n_updates):
-            mixed_sim = self.similarity_alpha * pairwise_sims[i] + (1 - self.similarity_alpha) * avg_sims[i]
-            similarities.append(mixed_sim)
+            similarities.append(sim)
 
         similarities = np.array(similarities)
 
         # Print information
-        print(f"  📈 Mixed Similarity - Mean: {similarities.mean():.3f}, "
+        print(f"  📈 Cosine Similarity - Mean: {similarities.mean():.3f}, "
               f"Std Dev: {similarities.std():.3f}")
 
         # Display similarity for each client
@@ -142,10 +126,13 @@ class Server:
 
     def _compute_euclidean_distances(self, updates: List[torch.Tensor]) -> np.ndarray:
         """
-        Compute Euclidean distances between each update and the mean update.
+        Compute standard Euclidean distances between each update and the mean update.
         
-        This is analogous to cosine similarity but uses Euclidean distance instead.
-        Each distance is computed as: ||update_i - mean_update||
+        Standard definition (used in FL defense literature):
+            dist_i = ||w_i - mean(w_1, w_2, ..., w_n)||
+        
+        This is the standard Euclidean distance (L2 norm) metric used in federated
+        learning defense mechanisms (e.g., Multi-Krum, Coordinate-wise Median).
         
         Args:
             updates: List of client update tensors
