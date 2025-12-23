@@ -231,7 +231,12 @@ def setup_experiment(config):
                     rho_init=config.get('rho_init', 0.1),
                     lambda_lr=config.get('lambda_lr', 0.01),
                     rho_lr=config.get('rho_lr', 0.01),
-                    enable_final_projection=config.get('enable_final_projection', True)
+                    enable_final_projection=config.get('enable_final_projection', True),
+                    mu_init=config.get('mu_init', 0.0),
+                    mu_lr=config.get('mu_lr', 0.01),
+                    benign_similarity_threshold=config.get('benign_similarity_threshold', 0.0),
+                    benign_similarity_margin=config.get('benign_similarity_margin', 0.0),
+                    use_adaptive_similarity_threshold=config.get('use_adaptive_similarity_threshold', False)
                 )
                 final_proj_status = "enabled" if config.get('enable_final_projection', True) else "disabled"
                 print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, ρ(1)={config.get('rho_init', 0.1)}, final projection={final_proj_status}")
@@ -660,9 +665,11 @@ def main():
         # ========== Attack Configuration ==========
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
-        # ========== Formula 4 Constraint Parameters ==========
+        # ========== Formula 4 Constraint Parameters (Thresholds) ==========
+        # All threshold parameters that define constraint boundaries
         'd_T': 2.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        'gamma': 5.0,  # Upper bound threshold for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        'benign_similarity_threshold': 0.1,  # Lower bound threshold for new constraint: cosine_similarity(w'_j, w_benign) ≥ threshold (≥0)
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
@@ -694,6 +701,20 @@ def main():
         'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
         'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
         'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
+        'mu_init': 0.0,  # Initial μ(t) value for new constraint: cosine_similarity(w'_j, w_benign) ≥ threshold (≥0)
+                         # This constraint helps reduce cosine similarity difference between attacker and benign clients
+                         # Set to 0.0 to disable (default)
+                         # Note: threshold parameter is defined above in "Formula 4 Constraint Parameters" section
+        'mu_lr': 0.01,   # Learning rate for μ(t) update (subgradient step size)
+        'use_adaptive_similarity_threshold': True,  # Whether to use adaptive threshold based on benign clients' similarity with mean (bool)
+                                                   # If True, threshold adapts to benign clients' changing similarity (follows their pattern)
+                                                   # Reference: Similar to how Euclidean Distance constraint uses w'_g which adapts to current state
+                                                   # If False, uses fixed benign_similarity_threshold
+        'benign_similarity_margin': 0.02,  # Margin for adaptive similarity constraint (≥0)
+                                          # Used when use_adaptive_similarity_threshold=True
+                                          # Dynamic threshold = mean_benign_to_mean_similarity - margin
+                                          # Allows threshold to follow benign clients' similarity changes
+                                          # Recommended: 0.01-0.05 (small margin to allow slight variation)
         # 'attacker_claimed_data_size': None,  # If None, uses actual assigned data size (recommended for realistic scenario)
         # If set to a value, overrides actual data size (for attack experiments where attacker claims more data)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size (recommended)
