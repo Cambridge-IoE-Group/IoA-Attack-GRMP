@@ -634,7 +634,6 @@ def main():
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
-        
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
@@ -683,7 +682,8 @@ def main():
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
-        
+        'attacker_claimed_data_size': None,  # None = use actual assigned data size
+
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
                                     # If False, uses hard constraint projection
@@ -694,7 +694,6 @@ def main():
         'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
         'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
         'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
-        'attacker_claimed_data_size': None,  # None = use actual assigned data size (recommended)
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
