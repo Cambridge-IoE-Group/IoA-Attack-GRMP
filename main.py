@@ -661,7 +661,7 @@ def main():
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
-        'd_T': 2.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
+        'd_T': 1.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
         'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         
         # ========== VGAE Training Parameters ==========
@@ -694,8 +694,6 @@ def main():
         'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
         'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
         'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
-        # 'attacker_claimed_data_size': None,  # If None, uses actual assigned data size (recommended for realistic scenario)
-        # If set to a value, overrides actual data size (for attack experiments where attacker claims more data)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size (recommended)
         
         # ========== Proxy Loss Estimation Parameters ==========
