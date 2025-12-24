@@ -286,20 +286,13 @@ class AttackerClient(Client):
         # Initialized in set_lagrangian_params
         self.lambda_dt = None  # λ(t): Lagrangian multiplier for constraint (4b)
         self.rho_dt = None     # ρ(t): Lagrangian multiplier for constraint (4c)
-        self.mu_dt = None      # μ(t): Lagrangian multiplier for new constraint: cosine_similarity(w'_j, w_benign) ≥ threshold
         self.use_lagrangian_dual = False  # Whether to use Lagrangian Dual mechanism
         self.lambda_lr = 0.01  # Learning rate for λ(t) update
         self.rho_lr = 0.01     # Learning rate for ρ(t) update
-        self.mu_lr = 0.01      # Learning rate for μ(t) update
         # Save initial values for reset in prepare_for_round (Modification 1 and 2)
         self.lambda_init_value = None  # Save initial λ value for reset in prepare_for_round
         self.rho_init_value = None     # Save initial ρ value for reset in prepare_for_round
-        self.mu_init_value = None      # Save initial μ value for reset in prepare_for_round
         self.enable_final_projection = True  # Whether to apply final projection after optimization (only for Lagrangian mode)
-        self.benign_similarity_threshold = 0.0  # Threshold for new constraint: similarity ≥ threshold (will be set via set_lagrangian_params)
-        self.benign_similarity_margin = 0.0  # Margin for adaptive similarity constraint (will be set via set_lagrangian_params)
-        self.use_adaptive_similarity_threshold = False  # Whether to use adaptive threshold based on benign clients (will be set via set_lagrangian_params)
-        self.dynamic_similarity_threshold = None  # Dynamically computed threshold based on benign clients' similarity with mean
         
         # Track violation history for adaptive λ initialization (Optimization)
         self.last_violation = None  # Last round's constraint violation value (distance, not violation amount)
@@ -360,16 +353,6 @@ class AttackerClient(Client):
             else:
                 self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
             self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
-            # Reset μ if it was used
-            if self.mu_init_value is not None and self.mu_init_value > 0.0:
-                self.mu_dt = torch.tensor(self.mu_init_value, requires_grad=False)
-            else:
-                self.mu_dt = None
-            # Reset μ if it was used
-            if self.mu_init_value is not None and self.mu_init_value > 0.0:
-                self.mu_dt = torch.tensor(self.mu_init_value, requires_grad=False)
-            else:
-                self.mu_dt = None
 
     def receive_benign_updates(self, updates: List[torch.Tensor], client_ids: Optional[List[int]] = None):
         """
@@ -434,7 +417,7 @@ class AttackerClient(Client):
                 benign_mean = benign_mean + weight * benign_update.to(self.device)
         else:
             # Fallback: use simple mean if data sizes not available
-        benign_mean = benign_stack.mean(dim=0)
+            benign_mean = benign_stack.mean(dim=0)
         
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
         # Clean up GPU references immediately
@@ -516,7 +499,7 @@ class AttackerClient(Client):
                 benign_mean = benign_mean + weight * benign_update.to(self.device)
         else:
             # Fallback: use simple mean if data sizes not available
-        benign_mean = benign_stack.mean(dim=0)
+            benign_mean = benign_stack.mean(dim=0)
         
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
         # Clean up GPU references immediately
@@ -841,8 +824,8 @@ class AttackerClient(Client):
             
             candidate_params = global_params_gpu + malicious_update
             
-        # Skip dimension check if already validated (performance optimization)
-        param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
+            # Skip dimension check if already validated (performance optimization)
+            param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
 
             # CRITICAL FIX: Ensure all parameters in param_dict are on the correct device
             # Normalize device: always use 'cuda:0' for consistency  
@@ -865,13 +848,13 @@ class AttackerClient(Client):
             except StopIteration:
                 pass
 
-        total_loss = 0.0
-        batches = 0
+            total_loss = 0.0
+            batches = 0
             
             # Normalize device once for this batch loop
             target_device = torch.device('cuda:0') if self.device.type == 'cuda' else self.device
 
-        for batch in self.proxy_loader:
+            for batch in self.proxy_loader:
                 input_ids = batch['input_ids'].to(target_device)
                 attention_mask = batch['attention_mask'].to(target_device)
                 labels = batch['labels'].to(target_device)
@@ -976,12 +959,12 @@ class AttackerClient(Client):
                         self._ensure_model_on_device(self.model, target_device)
                         self.model.to(target_device)
 
-            logits = stateless.functional_call(
-                self.model,
-                param_dict,
-                args=(),
-                kwargs={'input_ids': input_ids, 'attention_mask': attention_mask}
-            )
+                        logits = stateless.functional_call(
+                            self.model,
+                            param_dict,
+                            args=(),
+                            kwargs={'input_ids': input_ids, 'attention_mask': attention_mask}
+                        )
                     except (RuntimeError, KeyError) as e:
                         # If stateless.functional_call fails (e.g., parameter name mismatch in PEFT),
                         # try using the model directly with temporarily set parameters
@@ -1103,13 +1086,13 @@ class AttackerClient(Client):
                             # Return zero loss as last resort
                             return torch.tensor(0.0, device=target_device)
 
-            ce_loss = F.cross_entropy(logits, labels)
-            total_loss = total_loss + ce_loss
-            batches += 1
-            if batches >= max_batches:
-                break
+                ce_loss = F.cross_entropy(logits, labels)
+                total_loss = total_loss + ce_loss
+                batches += 1
+                if batches >= max_batches:
+                    break
 
-        if batches == 0:
+            if batches == 0:
                 result = torch.tensor(0.0, device=self.device)
             else:
                 result = total_loss / batches
@@ -1275,12 +1258,7 @@ class AttackerClient(Client):
                               rho_init: float = 0.1,
                               lambda_lr: float = 0.01,
                               rho_lr: float = 0.01,
-                              enable_final_projection: bool = True,
-                              mu_init: float = 0.0,
-                              mu_lr: float = 0.01,
-                              benign_similarity_threshold: float = 0.0,
-                              benign_similarity_margin: float = 0.0,
-                              use_adaptive_similarity_threshold: bool = False):
+                              enable_final_projection: bool = True):
         """
         Set Lagrangian Dual parameters (initialized according to paper Algorithm 1)
         
@@ -1297,44 +1275,19 @@ class AttackerClient(Client):
             rho_lr: Learning rate for ρ(t) update (subgradient step size)
             enable_final_projection: Whether to apply final projection after optimization (only for Lagrangian mode)
                                    If False, completely relies on Lagrangian mechanism (no final projection)
-            mu_init: Initial μ(t) value for new constraint: cosine_similarity(w'_j, w_benign) ≥ threshold (≥0)
-                     This constraint helps reduce cosine similarity difference between attacker and benign clients
-                     Default: 0.0 (disabled)
-            mu_lr: Learning rate for μ(t) update (subgradient step size)
-            benign_similarity_threshold: Threshold for new constraint (≥0)
-                                        If use_adaptive_similarity_threshold=True, this is ignored and threshold is computed dynamically
-                                        If use_adaptive_similarity_threshold=False, constraint: cosine_similarity(w'_j, w_benign) ≥ threshold
-                                        Default: 0.0 (disabled)
-            benign_similarity_margin: Margin for adaptive similarity constraint (≥0)
-                                     Used when use_adaptive_similarity_threshold=True
-                                     Constraint: cosine_similarity(w'_j, w_benign) ≥ (mean_benign_to_mean_similarity - margin)
-                                     Default: 0.0
-            use_adaptive_similarity_threshold: Whether to use adaptive threshold based on benign clients' similarity with mean (bool)
-                                              If True, threshold is computed dynamically as: mean_benign_to_mean_similarity - margin
-                                              This allows threshold to follow benign clients' similarity changes
-                                              Default: False
         
         Modification 2: Save initial values for reset in prepare_for_round
         """
         self.use_lagrangian_dual = use_lagrangian_dual
-        self.benign_similarity_threshold = max(0.0, benign_similarity_threshold)
-        self.benign_similarity_margin = max(0.0, benign_similarity_margin)
-        self.use_adaptive_similarity_threshold = use_adaptive_similarity_threshold
-        self.dynamic_similarity_threshold = None  # Will be computed dynamically in optimization loop
         if use_lagrangian_dual:
             # Paper: λ(1)≥0, ρ(1)≥0
             # Modification 2: Save initial values for reset each round
-            # Paper: λ(1)≥0, ρ(1)≥0
-            # Extension: μ(1)≥0 for new constraint (cosine similarity constraint)
             self.lambda_init_value = max(0.0, lambda_init)
             self.rho_init_value = max(0.0, rho_init)
-            self.mu_init_value = max(0.0, mu_init) if benign_similarity_threshold > 0.0 else 0.0
             self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
             self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
-            self.mu_dt = torch.tensor(self.mu_init_value, requires_grad=False) if benign_similarity_threshold > 0.0 else None
             self.lambda_lr = lambda_lr
             self.rho_lr = rho_lr
-            self.mu_lr = mu_lr if benign_similarity_threshold > 0.0 else 0.01
             self.enable_final_projection = enable_final_projection
         else:
             # Hard constraint projection mode
@@ -1369,7 +1322,7 @@ class AttackerClient(Client):
         # Check if we have total_data_size for full formula calculation
         if self.total_data_size is None or len(self.benign_data_sizes) == 0:
             # Fallback: use proxy loss only (old behavior)
-        proxy_loss = self._proxy_global_loss(malicious_update, max_batches=self.proxy_max_batches_opt, skip_dim_check=False)
+            proxy_loss = self._proxy_global_loss(malicious_update, max_batches=self.proxy_max_batches_opt, skip_dim_check=False)
             return proxy_loss
         
         # Paper Formula (3): Full calculation with weights
@@ -1643,8 +1596,8 @@ class AttackerClient(Client):
         # Generate perturbation with client_id and select_idx dependent scale
         # Scale increases with client_id and select_idx to ensure different perturbations
         perturbation_scale = self.gsp_perturbation_scale * (self.client_id + 1) * (1.0 + 0.1 * select_idx)
-            perturbation = torch.randn_like(gsp_attack) * perturbation_scale
-            gsp_attack = gsp_attack + perturbation
+        perturbation = torch.randn_like(gsp_attack) * perturbation_scale
+        gsp_attack = gsp_attack + perturbation
         
         # Restore random state
         torch.set_rng_state(rng_state_before)
@@ -1752,7 +1705,7 @@ class AttackerClient(Client):
         # Create malicious_update on CPU to save GPU memory
         # poisoned_update is likely on CPU, but ensure we create on CPU
         if poisoned_update.device.type == 'cuda':
-        malicious_update = torch.zeros_like(poisoned_update)
+            malicious_update = torch.zeros_like(poisoned_update)
         else:
             malicious_update = torch.zeros_like(poisoned_update, device='cpu')
         total_dim = int(malicious_update.shape[0])  # Convert to Python int
@@ -1794,7 +1747,7 @@ class AttackerClient(Client):
                     if gsp_attack_reduced.device.type == 'cuda':
                         malicious_update = gsp_attack_reduced.cpu()
                     else:
-                    malicious_update = gsp_attack_reduced
+                        malicious_update = gsp_attack_reduced
                 else:
                     # Dimension mismatch: log warning and use zeros
                     print(f"    [Attacker {self.client_id}] GSP dimension mismatch: got {gsp_dim}, expected {total_dim}, using zeros")
@@ -1922,71 +1875,6 @@ class AttackerClient(Client):
             
             constraint_c_value_for_update = agg_dist.item()
             
-            # OPTIMIZATION 7: Compute dynamic similarity threshold based on benign clients (similar to Euclidean Distance approach)
-            # Reference: Euclidean Distance computes d(w'_j, w'_g) where w'_g is the contaminated global model
-            # Similarly, we compute mean_benign_to_mean_similarity as the reference for adaptive threshold
-            if self.use_adaptive_similarity_threshold and self.mu_dt is not None and self.mu_dt.item() > 0.0 and len(self.benign_updates) > 0:
-                # Compute weighted mean of ALL benign clients: w̄_i(t) = Σ (D_i/D) w_i(t)
-                # This is the same weighted_mean computed above for constraint (4c)
-                if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
-                    D_total = float(self.total_data_size)
-                    benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
-                    benign_stack = torch.stack(benign_updates_gpu)
-                    weighted_mean_benign = torch.zeros_like(benign_stack[0])
-                    
-                    for idx, benign_update in enumerate(self.benign_updates):
-                        if idx < len(self.benign_update_client_ids):
-                            client_id = self.benign_update_client_ids[idx]
-                            D_i = self.benign_data_sizes.get(client_id, 1.0)
-                            weight = D_i / D_total
-                        else:
-                            weight = 1.0 / len(self.benign_updates)
-                        weighted_mean_benign = weighted_mean_benign + weight * benign_update.to(self.device)
-                    
-                    # Compute cosine similarity between each benign client and weighted mean
-                    benign_to_mean_similarities = []
-                    for benign_update in self.benign_updates:
-                        benign_flat = benign_update.view(-1).to(self.device)
-                        mean_flat = weighted_mean_benign.view(-1)
-                        cos_sim = torch.cosine_similarity(
-                            benign_flat.unsqueeze(0),
-                            mean_flat.unsqueeze(0)
-                        )
-                        benign_to_mean_similarities.append(cos_sim.item())
-                    
-                    # Use mean of benign-to-mean similarities as the reference
-                    if len(benign_to_mean_similarities) > 0:
-                        mean_benign_to_mean_similarity = np.mean(benign_to_mean_similarities)
-                        # Dynamic threshold: mean_benign_to_mean_similarity - margin
-                        self.dynamic_similarity_threshold = max(0.0, mean_benign_to_mean_similarity - self.benign_similarity_margin)
-                        del benign_updates_gpu, benign_stack, weighted_mean_benign
-                    else:
-                        self.dynamic_similarity_threshold = None
-                else:
-                    # Fallback: use simple mean
-                    benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
-                    benign_stack = torch.stack(benign_updates_gpu)
-                    simple_mean_benign = benign_stack.mean(dim=0)
-                    
-                    benign_to_mean_similarities = []
-                    for benign_update in self.benign_updates:
-                        benign_flat = benign_update.view(-1).to(self.device)
-                        mean_flat = simple_mean_benign.view(-1)
-                        cos_sim = torch.cosine_similarity(
-                            benign_flat.unsqueeze(0),
-                            mean_flat.unsqueeze(0)
-                        )
-                        benign_to_mean_similarities.append(cos_sim.item())
-                    
-                    if len(benign_to_mean_similarities) > 0:
-                        mean_benign_to_mean_similarity = np.mean(benign_to_mean_similarities)
-                        self.dynamic_similarity_threshold = max(0.0, mean_benign_to_mean_similarity - self.benign_similarity_margin)
-                        del benign_updates_gpu, benign_stack, simple_mean_benign
-                    else:
-                        self.dynamic_similarity_threshold = None
-            else:
-                self.dynamic_similarity_threshold = None
-            
             # For Lagrangian mode, cache the base term on GPU to avoid recomputation
             if self.use_lagrangian_dual:
                 constraint_c_term_base = agg_dist  # Keep on GPU for reuse in loop
@@ -2089,60 +1977,6 @@ class AttackerClient(Client):
                 # (constant terms λ d_T and ρ Γ are omitted as they don't affect optimization direction)
                 lagrangian_objective = -global_loss + constraint_b_term + constraint_c_term
                 
-                # ============================================================
-                # Extension: Add new constraint using Lagrangian multiplier μ
-                # Constraint: cosine_similarity(w'_j, w_benign) ≥ threshold
-                # ============================================================
-                # Problem: Current optimization makes w'_j close to w'_g (mean direction),
-                #          leading to high cosine similarity with mean (0.9-0.98),
-                #          while benign clients have low similarity (0.05-0.15).
-                #          This exposes the attacker.
-                # Solution: Add constraint using Lagrangian multiplier μ (strictly follows Lagrangian dual theory)
-                #           Constraint: cosine_similarity(w'_j, w_benign) - threshold ≥ 0
-                #           In standard form: threshold - cosine_similarity(w'_j, w_benign) ≤ 0
-                #           Lagrangian term: -μ (threshold - cosine_similarity(w'_j, w_benign))
-                #           Converting to minimization: +μ (threshold - cosine_similarity(w'_j, w_benign))
-                constraint_similarity_term = torch.tensor(0.0, device=self.device)
-                constraint_similarity_violation = torch.tensor(0.0, device=self.device)
-                if self.mu_dt is not None and self.mu_dt.item() > 0.0 and len(selected_benign) > 0:
-                    # Determine which threshold to use: adaptive or fixed
-                    # Adaptive threshold follows Euclidean Distance approach: uses current state (benign clients' similarity with mean)
-                    if self.use_adaptive_similarity_threshold and self.dynamic_similarity_threshold is not None:
-                        # Use adaptive threshold computed based on benign clients' similarity with mean
-                        # This follows the same pattern as Euclidean Distance constraint (4b): d(w'_j, w'_g)
-                        # where w'_g adapts to the current state, here threshold adapts to benign clients' pattern
-                        current_threshold = self.dynamic_similarity_threshold
-                    elif self.benign_similarity_threshold > 0.0:
-                        # Use fixed threshold (original behavior)
-                        current_threshold = self.benign_similarity_threshold
-                    else:
-                        current_threshold = None
-                    
-                    if current_threshold is not None and current_threshold > 0.0:
-                        # Compute mean cosine similarity between w'_j and selected benign clients
-                        proxy_param_flat = proxy_param.view(-1)
-                        benign_similarities = []
-                        for benign_update in selected_benign:
-                            benign_flat = benign_update.view(-1).to(self.device)
-                            # Compute cosine similarity
-                            cos_sim = torch.cosine_similarity(
-                                proxy_param_flat.unsqueeze(0),
-                                benign_flat.unsqueeze(0)
-                            )
-                            benign_similarities.append(cos_sim)
-                        
-                        if len(benign_similarities) > 0:
-                            mean_benign_similarity = torch.stack(benign_similarities).mean()
-                            # Constraint: mean_benign_similarity - threshold ≥ 0
-                            # Standard form: threshold - mean_benign_similarity ≤ 0
-                            # Violation: ReLU(threshold - mean_benign_similarity)
-                            # Use current_threshold (either adaptive or fixed)
-                            constraint_similarity_violation = F.relu(current_threshold - mean_benign_similarity)
-                            # Lagrangian term: -μ (threshold - mean_benign_similarity)
-                            # Converting to minimization: +μ (threshold - mean_benign_similarity)
-                            constraint_similarity_term = self.mu_dt * (current_threshold - mean_benign_similarity)
-                
-                lagrangian_objective = lagrangian_objective + constraint_similarity_term
                 
                 # ============================================================
                 # ============================================================
@@ -2243,40 +2077,6 @@ class AttackerClient(Client):
                     new_rho = max(0.0, new_rho)  # Ensure non-negative
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
                     self.rho_dt = torch.tensor(new_rho, device=target_device, requires_grad=False)
-                
-                # Update μ for similarity constraint (if enabled)
-                if self.mu_dt is not None and len(selected_benign) > 0:
-                    # Determine which threshold to use: adaptive or fixed
-                    if self.use_adaptive_similarity_threshold and self.dynamic_similarity_threshold is not None:
-                        current_threshold = self.dynamic_similarity_threshold
-                    elif self.benign_similarity_threshold > 0.0:
-                        current_threshold = self.benign_similarity_threshold
-                    else:
-                        current_threshold = None
-                    
-                    if current_threshold is not None and current_threshold > 0.0:
-                        # Calculate current similarity after step()
-                        proxy_param_flat_updated = proxy_param.view(-1)
-                        current_similarities = []
-                        for benign_update in selected_benign:
-                            benign_flat = benign_update.view(-1).to(self.device)
-                            cos_sim = torch.cosine_similarity(
-                                proxy_param_flat_updated.unsqueeze(0),
-                                benign_flat.unsqueeze(0)
-                            )
-                            current_similarities.append(cos_sim)
-                        
-                        if len(current_similarities) > 0:
-                            current_mean_similarity = torch.stack(current_similarities).mean().item()
-                            mu_val = self.mu_dt.item() if isinstance(self.mu_dt, torch.Tensor) else self.mu_dt
-                            # Subgradient: threshold - mean_benign_similarity
-                            # If constraint is violated (similarity < threshold), subgradient > 0, μ increases
-                            # Use current_threshold (either adaptive or fixed)
-                            subgradient_similarity = current_threshold - current_mean_similarity
-                            new_mu = mu_val + self.mu_lr * subgradient_similarity
-                            new_mu = max(0.0, new_mu)  # Ensure non-negative
-                            # OPTIMIZATION 5: Keep multiplier on same device when updating
-                            self.mu_dt = torch.tensor(new_mu, device=target_device, requires_grad=False)
             
             # ============================================================
             # Constraint handling: Different strategies for Lagrangian vs hard constraint modes
@@ -2289,7 +2089,7 @@ class AttackerClient(Client):
                     proxy_param.data = proxy_param.data * (self.d_T / dist_to_global)
             # Note: In Lagrangian Dual mode, we do NOT apply any projection during optimization loop
             # This maintains mathematical integrity of the dual problem:
-            # - Lagrangian mechanism relies on multipliers (λ, ρ, μ) to control constraints
+            # - Lagrangian mechanism relies on multipliers (λ, ρ) to control constraints
             # - Hard projection would break the continuity of Lagrangian function L(x,λ)
             # - Multiplier updates become ineffective if violations are hard-corrected
             # - The dual problem max_λ min_x L(x,λ) requires unconstrained inner minimization
@@ -2315,7 +2115,7 @@ class AttackerClient(Client):
         if self.use_lagrangian_dual:
             # Final constraint check: Graded projection strategy (within Lagrangian framework)
             # Use different strategies based on violation degree to balance flexibility and constraint satisfaction
-        if self.d_T is not None:
+            if self.d_T is not None:
                 # Use real distance calculation according to paper Constraint (4b)
                 dist_to_global_tensor = self._compute_real_distance_to_global(
                     malicious_update,
@@ -2389,8 +2189,8 @@ class AttackerClient(Client):
         else:
             # Hard constraint mode: compute here (only needed for logging)
             # Use the same calculation as in Lagrangian mode for consistency
-        constraint_c_value = torch.tensor(0.0, device=self.device)
-        if self.gamma is not None and len(selected_benign) > 0:
+            constraint_c_value = torch.tensor(0.0, device=self.device)
+            if self.gamma is not None and len(selected_benign) > 0:
                 # Compute constraint (4c) value using weighted mean of ALL benign clients
                 # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean of ALL benign clients)
                 if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
@@ -2418,8 +2218,8 @@ class AttackerClient(Client):
                     # Fallback: use simple mean if data sizes not available
                     sel_benign_gpu = [u.to(self.device) for u in selected_benign]
                     sel_stack = torch.stack(sel_benign_gpu)
-            sel_mean = sel_stack.mean(dim=0)
-            distances = torch.norm(sel_stack - sel_mean, dim=1)
+                    sel_mean = sel_stack.mean(dim=0)
+                    distances = torch.norm(sel_stack - sel_mean, dim=1)
                     constraint_c_value = distances.sum()
                     # Clean up GPU references
                     del sel_benign_gpu, sel_stack, sel_mean, distances
@@ -2436,9 +2236,6 @@ class AttackerClient(Client):
             lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
             rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
             log_msg += f", λ={lambda_val:.4f}, ρ={rho_val:.4f}"
-            if self.mu_dt is not None:
-                mu_val = self.mu_dt.item() if isinstance(self.mu_dt, torch.Tensor) else self.mu_dt
-                log_msg += f", μ={mu_val:.4f}"
         
         print(log_msg)
         
