@@ -2216,7 +2216,7 @@ class AttackerClient(Client):
                 # subgradient = (constraint value - bound)
                 # When constraint is violated (constraint value > bound), subgradient > 0, λ increases to penalize violation
                 
-            if self.d_T is not None:
+                if self.d_T is not None:
                     # Calculate real distance after step() (proxy_param has been updated)
                     # Use real distance calculation according to paper Constraint (4b)
                     current_dist_tensor = self._compute_real_distance_to_global(
@@ -2279,8 +2279,7 @@ class AttackerClient(Client):
                             self.mu_dt = torch.tensor(new_mu, device=target_device, requires_grad=False)
             
             # ============================================================
-            # Modification 4: Add constraint safeguard mechanism within optimization loop (Lagrangian framework)
-            # Under Lagrangian mechanism, add light projection as safeguard to prevent optimization path from deviating too far
+            # Constraint handling: Different strategies for Lagrangian vs hard constraint modes
             # ============================================================
             if not self.use_lagrangian_dual and self.d_T is not None:
                 # Hard constraint projection (original logic, behavior when not using Lagrangian)
@@ -2288,25 +2287,14 @@ class AttackerClient(Client):
                 if dist_to_global > self.d_T:
                     # Project to constraint set: scale down to satisfy d ≤ d_T
                     proxy_param.data = proxy_param.data * (self.d_T / dist_to_global)
-            elif self.use_lagrangian_dual and self.d_T is not None:
-                # Modification 4: Constraint safeguard under Lagrangian mechanism
-                # Check within optimization loop, if violation exceeds 20%, immediately apply light projection to prevent path deviation
-                # This maintains Lagrangian flexibility while ensuring constraints are promptly safeguarded
-                # Use real distance calculation according to paper Constraint (4b)
-                dist_to_global_for_projection_tensor = self._compute_real_distance_to_global(
-                    proxy_param,
-                    selected_benign,
-                    beta_selection
-                )
-                dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
-                
-                violation_ratio = (dist_to_global_for_projection - self.d_T) / self.d_T if self.d_T > 0 else 0.0
-                
-                if violation_ratio > 0.20:  # Apply light projection when violation exceeds 20%
-                    # Light projection to 1.1 × d_T, leaving 10% margin to allow Lagrangian to continue optimizing
-                    target_dist = self.d_T * 1.1
-                    scale_factor = target_dist / dist_to_global_for_projection
-                    proxy_param.data = proxy_param.data * scale_factor
+            # Note: In Lagrangian Dual mode, we do NOT apply any projection during optimization loop
+            # This maintains mathematical integrity of the dual problem:
+            # - Lagrangian mechanism relies on multipliers (λ, ρ, μ) to control constraints
+            # - Hard projection would break the continuity of Lagrangian function L(x,λ)
+            # - Multiplier updates become ineffective if violations are hard-corrected
+            # - The dual problem max_λ min_x L(x,λ) requires unconstrained inner minimization
+            # Constraint violations are handled entirely through Lagrangian penalty terms
+            # and multiplier updates via subgradient method
         
         malicious_update = proxy_param.detach()
         
