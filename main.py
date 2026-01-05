@@ -679,7 +679,7 @@ def main():
         'vgae_dropout': 0.0,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 30,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
@@ -688,12 +688,12 @@ def main():
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
-        'enable_light_projection_in_loop': False,  # Whether to apply light projection within optimization loop (bool, True/False)
+        'enable_light_projection_in_loop': True,  # Whether to apply light projection within optimization loop (bool, True/False)
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
-        'lambda_init': 10000,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
-        'rho_init': 1.0,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
-        'lambda_lr': 1.0,  # Learning rate for λ(t) update (subgradient step size)
-        'rho_lr': 0.1,   # Learning rate for ρ(t) update (subgradient step size)
+        'lambda_init': 0.1,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
+        'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
+        'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
+        'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
