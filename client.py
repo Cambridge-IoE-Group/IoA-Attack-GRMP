@@ -2107,37 +2107,41 @@ class AttackerClient(Client):
                     dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
                     
                     violation_ratio = (dist_to_global_for_projection - self.d_T) / self.d_T if self.d_T > 0 else 0.0
-                    
-                    if violation_ratio > 1:  # Apply light projection when violation exceeds 100%
-                        # Dynamic projection strategy: Project to different targets based on violation severity
-                        # This provides appropriate optimization space for Lagrangian mechanism while preventing extreme violations
-                        if violation_ratio > 100:  # Extreme violation (>10000%): Project to 10×d_T
-                            # For violations like 13237.9%, project to 10×d_T to provide substantial optimization space
-                            # This allows Lagrangian mechanism to gradually reduce violation over multiple steps
-                            target_dist = self.d_T * 10.0
-                            projection_type = "extreme"
-                        elif violation_ratio > 50:  # Severe violation (5000-10000%): Project to 5×d_T
-                            # For severe violations, project to 5×d_T to provide moderate optimization space
-                            target_dist = self.d_T * 5.0
-                            projection_type = "severe"
-                        elif violation_ratio > 10:  # High violation (1000-5000%): Project to 3×d_T
-                            # For high violations, project to 3×d_T to provide reasonable optimization space
-                            target_dist = self.d_T * 3.0
-                            projection_type = "high"
-                        elif violation_ratio > 5:  # Moderate violation (500-1000%): Project to 2×d_T
-                            # For moderate violations, project to 2×d_T to provide adequate optimization space
-                            target_dist = self.d_T * 2.0
-                            projection_type = "moderate"
-                        else:  # Mild violation (100-500%): Project to 1.5×d_T
-                            # For mild violations, project to 1.5×d_T to provide small optimization space
-                            target_dist = self.d_T * 1.5
-                            projection_type = "mild"
+
+                    if violation_ratio > 1:
+                        # Light projection to 1.2 × d_T, leaving 10% margin to allow Lagrangian to continue optimizing
+                        target_dist = self.d_T * 1.5
+
+                    # if violation_ratio > 1:  # Apply light projection when violation exceeds 100%
+                    #     # Dynamic projection strategy: Project to different targets based on violation severity
+                    #     # This provides appropriate optimization space for Lagrangian mechanism while preventing extreme violations
+                    #     if violation_ratio > 100:  # Extreme violation (>10000%): Project to 10×d_T
+                    #         # For violations like 13237.9%, project to 10×d_T to provide substantial optimization space
+                    #         # This allows Lagrangian mechanism to gradually reduce violation over multiple steps
+                    #         target_dist = self.d_T * 10.0
+                    #         projection_type = "extreme"
+                    #     elif violation_ratio > 50:  # Severe violation (5000-10000%): Project to 5×d_T
+                    #         # For severe violations, project to 5×d_T to provide moderate optimization space
+                    #         target_dist = self.d_T * 5.0
+                    #         projection_type = "severe"
+                    #     elif violation_ratio > 10:  # High violation (1000-5000%): Project to 3×d_T
+                    #         # For high violations, project to 3×d_T to provide reasonable optimization space
+                    #         target_dist = self.d_T * 3.0
+                    #         projection_type = "high"
+                    #     elif violation_ratio > 5:  # Moderate violation (500-1000%): Project to 2×d_T
+                    #         # For moderate violations, project to 2×d_T to provide adequate optimization space
+                    #         target_dist = self.d_T * 2.0
+                    #         projection_type = "moderate"
+                    #     else:  # Mild violation (100-500%): Project to 1.5×d_T
+                    #         # For mild violations, project to 1.5×d_T to provide small optimization space
+                    #         target_dist = self.d_T * 1.5
+                    #         projection_type = "mild"
                         
                         scale_factor = target_dist / dist_to_global_for_projection
                         proxy_param.data = proxy_param.data * scale_factor
-                        print(f"      [Attacker {self.client_id}] Applied {projection_type} projection: "
-                              f"violation={violation_ratio*100:.1f}%, projected from {dist_to_global_for_projection:.4f} to {target_dist:.4f} "
-                              f"(scale_factor={scale_factor:.6f})")
+                        # print(f"      [Attacker {self.client_id}] Applied {projection_type} projection: "
+                        #       f"violation={violation_ratio*100:.1f}%, projected from {dist_to_global_for_projection:.4f} to {target_dist:.4f} "
+                        #       f"(scale_factor={scale_factor:.6f})")
         
         malicious_update = proxy_param.detach()
         
