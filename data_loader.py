@@ -63,7 +63,8 @@ class DataManager:
     """Manages AG News data distribution (data-agnostic attack setting)"""
 
     def __init__(self, num_clients, num_attackers, test_seed,
-                 dataset_size_limit=None, batch_size=None, test_batch_size=None):
+                 dataset_size_limit=None, batch_size=None, test_batch_size=None,
+                 model_name: str = "distilbert-base-uncased"):
         
         """
         Initialize DataManager for AG News dataset.
@@ -77,6 +78,7 @@ class DataManager:
                                 WARNING: Using limit may affect reproducibility. For paper reproduction, use None.
             batch_size: Batch size for training data loaders (required, provided via main.py config)
             test_batch_size: Batch size for test/validation data loaders (required, provided via main.py config)
+            model_name: Hugging Face model name for tokenizer initialization
         """
 
         if batch_size is None or test_batch_size is None:
@@ -88,7 +90,7 @@ class DataManager:
         self.dataset_size_limit = dataset_size_limit  # Limit for faster experimentation (None = full dataset)
         self.batch_size = batch_size  # Batch size for training data loaders
         self.test_batch_size = test_batch_size  # Batch size for test data loaders
-        self.tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         print("Loading AG News dataset...")
         self._load_data()

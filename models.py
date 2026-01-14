@@ -62,10 +62,21 @@ class NewsClassifierModel(nn.Module):
                     "LoRA support requires peft library. Install with: pip install peft"
                 )
             
-            # Default target modules for DistilBERT
+            # Default target modules based on model family
             if lora_target_modules is None:
+                model_name_lower = model_name.lower()
                 # DistilBERT uses these module names for attention layers
-                lora_target_modules = ["q_lin", "k_lin", "v_lin", "out_lin"]
+                if "distilbert" in model_name_lower:
+                    lora_target_modules = ["q_lin", "k_lin", "v_lin", "out_lin"]
+                # DeBERTa v2/v3 uses projection module names in attention
+                elif "deberta" in model_name_lower:
+                    lora_target_modules = ["query_proj", "key_proj", "value_proj", "dense"]
+                # BERT/RoBERTa style attention module names
+                elif "bert" in model_name_lower or "roberta" in model_name_lower:
+                    lora_target_modules = ["query", "key", "value", "dense"]
+                else:
+                    # Fallback: keep None and let PEFT raise a clearer error if unsupported
+                    lora_target_modules = None
             
             # Configure LoRA
             peft_config = LoraConfig(

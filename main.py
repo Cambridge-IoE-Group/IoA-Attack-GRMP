@@ -48,7 +48,8 @@ def setup_experiment(config):
         test_seed=config['seed'],
         dataset_size_limit=config['dataset_size_limit'],
         batch_size=config['batch_size'],
-        test_batch_size=config['test_batch_size']
+        test_batch_size=config['test_batch_size'],
+        model_name=config.get('model_name', 'distilbert-base-uncased')
     )
 
     # 2. Partition data among clients (Non-IID distribution per paper)
@@ -624,8 +625,8 @@ def main():
         'seed': 42,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
-        'num_clients': 10,  # Total number of federated learning clients (int)
-        'num_attackers': 3,  # Number of attacker clients (int, must be < num_clients)
+        'num_clients': 7,  # Total number of federated learning clients (int)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -642,8 +643,8 @@ def main():
         # ========== Data Distribution ==========
         'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        # 'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
         'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
@@ -655,7 +656,7 @@ def main():
         'lora_dropout': 0.1,  # LoRA dropout rate
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
         # Model configuration
-        'model_name': 'distilbert-base-uncased',  # Model name or path
+        'model_name': 'microsoft/deberta-v3-base',  # Newer model suitable for single A100
         'num_labels': 4,  # Number of classification labels
 
         # ========== Attack Configuration ==========
