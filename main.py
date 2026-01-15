@@ -635,8 +635,8 @@ def main():
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
-        'batch_size': 128,  # Batch size for local training (int)
-        'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
+        'batch_size': 32,  # Batch size for local training (int)
+        'test_batch_size': 128,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
@@ -681,7 +681,7 @@ def main():
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 30,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 20,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
@@ -697,7 +697,7 @@ def main():
         'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
         
         # ========== Proxy Loss Estimation Parameters ==========
-        'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
+        'proxy_sample_size': 128,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
         'proxy_max_batches_opt': 2,  # Max batches for proxy loss in optimization loop (int)
                                 # Used during gradient-based optimization (20 steps per round)
