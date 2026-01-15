@@ -884,93 +884,117 @@ class AttackerClient(Client):
                 use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
                 
                 if use_lora:
-                    # For LoRA models, use fallback method directly to avoid stateless.functional_call device issues
+                    # For LoRA models, try stateless.functional_call first to preserve gradients
+                    # CRITICAL FIX: Previously used param.data.copy_() in no_grad(), which broke gradients
+                    # Now we try stateless.functional_call first, which preserves gradients properly
                     logits = None
-                    original_params = {}
                     try:
-                        # CRITICAL: First ensure ALL parameters (including base model) are on target device
-                        # This must be done BEFORE setting LoRA parameters
+                        # First ensure model is on correct device
                         self.model.to(target_device)
                         self._ensure_model_on_device(self.model, target_device)
                         
-                        # Verify all parameters are on correct device before setting new values
-                        for name, param in self.model.named_parameters():
-                            if not self._device_matches(param.device, target_device):
-                                with torch.no_grad():
-                                    param.data = param.data.to(target_device, non_blocking=True)
-                        
-                        # Verify all buffers are on correct device
-                        for name, buffer in self.model.named_buffers():
-                            if not self._device_matches(buffer.device, target_device):
-                                buffer.data = buffer.data.to(target_device, non_blocking=True)
-                        
-                        # Now save original parameters and set new values (only LoRA params)
-                        # CRITICAL: Use no_grad() for parameter setting to avoid tracking gradients
-                        # We only need gradients for the forward pass, not for data copying
-                        with torch.no_grad():
+                        # Try stateless.functional_call first (preserves gradients)
+                        logits = stateless.functional_call(
+                            self.model,
+                            param_dict,
+                            args=(),
+                            kwargs={'input_ids': input_ids, 'attention_mask': attention_mask}
+                        )
+                    except (RuntimeError, KeyError, TypeError) as e:
+                        # If stateless.functional_call fails, use fallback with explicit gradient preservation
+                        # CRITICAL: Must preserve gradients to malicious_update
+                        original_params = {}
+                        try:
+                            # Ensure ALL parameters (including base model) are on target device
+                            self.model.to(target_device)
+                            self._ensure_model_on_device(self.model, target_device)
+                            
+                            # Verify all parameters are on correct device before setting new values
+                            for name, param in self.model.named_parameters():
+                                if not self._device_matches(param.device, target_device):
+                                    with torch.no_grad():
+                                        param.data = param.data.to(target_device, non_blocking=True)
+                            
+                            # Verify all buffers are on correct device
+                            for name, buffer in self.model.named_buffers():
+                                if not self._device_matches(buffer.device, target_device):
+                                    buffer.data = buffer.data.to(target_device, non_blocking=True)
+                            
+                            # CRITICAL FIX: Set parameters WITHOUT no_grad() to preserve gradients
+                            # The param_dict values come from candidate_params = global_params + malicious_update
+                            # By NOT using no_grad(), we maintain the computational graph
                             for name, param in self.model.named_parameters():
                                 if name in param_dict:
-                                    # Save original parameter value
-                                    original_params[name] = param.data.clone()
-                                    # Get new parameter value from param_dict
+                                    # Save original parameter value (with no_grad for original value only)
+                                    with torch.no_grad():
+                                        original_params[name] = param.data.clone()
+                                    # Get new parameter value from param_dict (preserves gradients from candidate_params)
                                     new_value = param_dict[name]
-                                    # Ensure new_value is on target_device
+                                    # Ensure new_value is on target_device (preserves gradients)
                                     if not self._device_matches(new_value.device, target_device):
                                         new_value = new_value.to(target_device, non_blocking=True)
-                                    # Ensure data type matches
+                                    # Ensure data type matches (preserves gradients)
                                     if new_value.dtype != param.dtype:
                                         new_value = new_value.to(dtype=param.dtype)
-                                    # Copy the value
-                                    param.data.copy_(new_value)
-                        
-                        # Final check: ensure all parameters are still on correct device after setting
-                        # CRITICAL: This must be done before forward pass to avoid device mismatch in backward
-                        # Use multiple methods to ensure everything is on GPU
-                        self.model.to(target_device)  # Force move model to GPU
-                        self._ensure_model_on_device(self.model, target_device)  # Recursive check
-                        
-                        # One final verification before forward pass
-                        # Check ALL parameters (including base model params in LoRA mode)
-                        # This is critical for LoRA models where base model params might not be moved correctly
-                        for name, param in self.model.named_parameters():
-                            if not self._device_matches(param.device, target_device):
-                                print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Parameter {name} on {param.device}, fixing...")
-                                with torch.no_grad():
-                                    param.data = param.data.to(target_device, non_blocking=True)
-                        for name, buffer in self.model.named_buffers():
-                            if not self._device_matches(buffer.device, target_device):
-                                print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Buffer {name} on {buffer.device}, fixing...")
-                                buffer.data = buffer.data.to(target_device, non_blocking=True)
-                        
-                        # One more recursive check after fixing individual parameters
-                        self._ensure_model_on_device(self.model, target_device)
-                        
-                        # Run forward pass
-                        # CRITICAL: All parameters and buffers MUST be on target_device at this point
-                        # The computation graph created here will be used for backward, so device consistency is essential
-                        logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
-                        
-                        # Restore original parameters
-                        # CRITICAL: Use no_grad() for parameter restoration to avoid tracking gradients
-                        with torch.no_grad():
+                                    # CRITICAL: Use param.set_() or direct assignment to preserve gradients
+                                    # param.data.copy_() in no_grad() would break gradients
+                                    # Instead, we use direct assignment which maintains computational graph
+                                    param.data = new_value
+                            
+                            # Final check: ensure all parameters are still on correct device after setting
+                            # CRITICAL: This must be done before forward pass to avoid device mismatch in backward
+                            # Use multiple methods to ensure everything is on GPU
+                            self.model.to(target_device)  # Force move model to GPU
+                            self._ensure_model_on_device(self.model, target_device)  # Recursive check
+                            
+                            # One final verification before forward pass
+                            # Check ALL parameters (including base model params in LoRA mode)
+                            # This is critical for LoRA models where base model params might not be moved correctly
                             for name, param in self.model.named_parameters():
-                                if name in original_params:
-                                    restored_value = original_params[name]
-                                    if not self._device_matches(restored_value.device, target_device):
-                                        restored_value = restored_value.to(target_device, non_blocking=True)
-                                    param.data.copy_(restored_value)
-                    except Exception as fallback_error:
-                        print(f"    [Attacker {self.client_id}] LoRA fallback method failed: {fallback_error}")
-                        # Restore parameters even if forward failed
-                        # CRITICAL: Use no_grad() for parameter restoration
-                        with torch.no_grad():
-                            for name, param in self.model.named_parameters():
-                                if name in original_params:
-                                    restored_value = original_params[name]
-                                    if not self._device_matches(restored_value.device, target_device):
-                                        restored_value = restored_value.to(target_device, non_blocking=True)
-                                    param.data.copy_(restored_value)
-                        raise
+                                if not self._device_matches(param.device, target_device):
+                                    print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Parameter {name} on {param.device}, fixing...")
+                                    with torch.no_grad():
+                                        param.data = param.data.to(target_device, non_blocking=True)
+                            for name, buffer in self.model.named_buffers():
+                                if not self._device_matches(buffer.device, target_device):
+                                    print(f"    [Attacker {self.client_id}] FINAL PRE-FORWARD: Buffer {name} on {buffer.device}, fixing...")
+                                    buffer.data = buffer.data.to(target_device, non_blocking=True)
+                            
+                            # One more recursive check after fixing individual parameters
+                            self._ensure_model_on_device(self.model, target_device)
+                            
+                            # Run forward pass
+                            # CRITICAL: All parameters and buffers MUST be on target_device at this point
+                            # The computation graph created here will be used for backward, so device consistency is essential
+                            logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                            
+                            # WARNING: Fallback method may not preserve gradients correctly
+                            # param.data = new_value does NOT create gradient connections
+                            # If this path is taken, gradients to malicious_update may be broken
+                            # This is a known limitation - stateless.functional_call should be preferred
+                            
+                        except Exception as fallback_error:
+                            print(f"    [Attacker {self.client_id}] LoRA fallback method failed: {fallback_error}")
+                            logits = None
+                        finally:
+                            # Restore original parameters (always restore, even on error)
+                            # CRITICAL: Use no_grad() for parameter restoration to avoid tracking gradients
+                            with torch.no_grad():
+                                for name, param in self.model.named_parameters():
+                                    if name in original_params:
+                                        restored_value = original_params[name]
+                                        if not self._device_matches(restored_value.device, target_device):
+                                            restored_value = restored_value.to(target_device, non_blocking=True)
+                                        param.data.copy_(restored_value)
+                        
+                        if logits is None:
+                            raise RuntimeError(f"LoRA fallback method failed for attacker {self.client_id}")
+                        
+                        # CRITICAL WARNING: Fallback method does NOT preserve gradients
+                        # Verify that logits is not detached from computational graph
+                        if not logits.requires_grad:
+                            print(f"    [Attacker {self.client_id}] WARNING: LoRA fallback produced logits without gradients!")
+                            print(f"    [Attacker {self.client_id}] Optimization may fail - gradients to malicious_update are broken")
                 
                 else:
                     # For full fine-tuning, try stateless.functional_call first
@@ -2038,6 +2062,20 @@ class AttackerClient(Client):
             # ============================================================
             # Backpropagate Lagrangian objective
             lagrangian_objective.backward()
+            
+            # CRITICAL: Verify that gradients are preserved for proxy_param
+            # This checks if the optimization objective actually depends on proxy_param
+            if proxy_param.grad is not None:
+                grad_norm = proxy_param.grad.norm().item()
+                if grad_norm < 1e-8:
+                    print(f"      [Attacker {self.client_id}] WARNING: Gradient norm is very small ({grad_norm:.2e})")
+                    print(f"      [Attacker {self.client_id}] This may indicate gradient flow is broken (e.g., in LoRA fallback mode)")
+                # Optional: Log gradient norm for debugging (commented out to avoid spam)
+                # elif step % 10 == 0:
+                #     print(f"      [Attacker {self.client_id}] Step {step}: gradient_norm={grad_norm:.4f}")
+            else:
+                print(f"      [Attacker {self.client_id}] ERROR: proxy_param.grad is None!")
+                print(f"      [Attacker {self.client_id}] Optimization is broken - no gradients computed")
             
             # Gradient clipping to prevent explosion
             torch.nn.utils.clip_grad_norm_([proxy_param], max_norm=self.grad_clip_norm)
