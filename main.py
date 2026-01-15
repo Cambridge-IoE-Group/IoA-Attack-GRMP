@@ -146,7 +146,10 @@ def setup_experiment(config):
         server_lr=config['server_lr'],
         tolerance_factor=config['tolerance_factor'],
         d_T=config['d_T'],
-        gamma=config['gamma'],
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # gamma=config['gamma'],
+        gamma=None,  # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         defense_high_rejection_threshold=config['defense_high_rejection_threshold'],
         defense_threshold_decay=config['defense_threshold_decay']
     )
@@ -229,15 +232,22 @@ def setup_experiment(config):
                 client.set_lagrangian_params(
                     use_lagrangian_dual=config['use_lagrangian_dual'],
                     lambda_init=config.get('lambda_init', 0.1),
-                    rho_init=config.get('rho_init', 0.1),
+                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                    # rho_init=config.get('rho_init', 0.1),
+                    # ==========================================
                     lambda_lr=config.get('lambda_lr', 0.01),
-                    rho_lr=config.get('rho_lr', 0.01),
+                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                    # rho_lr=config.get('rho_lr', 0.01),
+                    # ==========================================
                     enable_final_projection=config.get('enable_final_projection', True),
                     enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True)
                 )
                 final_proj_status = "enabled" if config.get('enable_final_projection', True) else "disabled"
                 light_proj_status = "enabled" if config.get('enable_light_projection_in_loop', True) else "disabled"
-                print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, ρ(1)={config.get('rho_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status}")
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                # print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, ρ(1)={config.get('rho_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status}")
+                print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status} [Constraint 4c disabled]")
+                # ==========================================
             else:
                 print(f"    Using hard constraint projection (Lagrangian Dual disabled)")
 
@@ -664,7 +674,10 @@ def main():
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 1.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # 'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        'gamma': None,  # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
@@ -692,9 +705,15 @@ def main():
         'enable_light_projection_in_loop': False,  # Whether to apply light projection within optimization loop (bool, True/False)
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
         'lambda_init': 100,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
-        'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # 'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
+        'rho_init': 0.1,     # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
-        'rho_lr': 0.1,   # Learning rate for ρ(t) update (subgradient step size)
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # 'rho_lr': 0.1,   # Learning rate for ρ(t) update (subgradient step size)
+        'rho_lr': 0.1,   # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 64,  # Number of samples in proxy dataset for F(w'_g) estimation (int)

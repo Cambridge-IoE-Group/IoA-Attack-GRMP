@@ -276,7 +276,10 @@ class AttackerClient(Client):
         
         # Formula 4 constraints parameters
         self.d_T = None  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        self.gamma = None  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # self.gamma = None  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        self.gamma = None  # Temporarily set to None to disable constraint (4c)
+        # ==========================================
         self.global_model_params = None  # Store global model params for constraint (4b) (will be on GPU when needed)
         # Paper Formula (2): w'_g(t) = Σ_{i=1}^I (D_i(t)/D(t)) β'_{i,j}(t) w_i(t) + (D'_j(t)/D(t)) w'_j(t)
         self.total_data_size = None  # D(t): Total data size for aggregation weight calculation
@@ -285,13 +288,18 @@ class AttackerClient(Client):
         # Lagrangian dual variables (λ(t) and ρ(t) from paper)
         # Initialized in set_lagrangian_params
         self.lambda_dt = None  # λ(t): Lagrangian multiplier for constraint (4b)
-        self.rho_dt = None     # ρ(t): Lagrangian multiplier for constraint (4c)
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # self.rho_dt = None     # ρ(t): Lagrangian multiplier for constraint (4c)
+        self.rho_dt = None     # Temporarily disabled (constraint 4c is commented out)
+        # self.rho_lr = 0.01     # Learning rate for ρ(t) update
+        self.rho_lr = 0.01     # Temporarily disabled (constraint 4c is commented out)
+        # self.rho_init_value = None     # Save initial ρ value for reset in prepare_for_round
+        self.rho_init_value = None     # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         self.use_lagrangian_dual = False  # Whether to use Lagrangian Dual mechanism
         self.lambda_lr = 0.01  # Learning rate for λ(t) update
-        self.rho_lr = 0.01     # Learning rate for ρ(t) update
         # Save initial values for reset in prepare_for_round (Modification 1 and 2)
         self.lambda_init_value = None  # Save initial λ value for reset in prepare_for_round
-        self.rho_init_value = None     # Save initial ρ value for reset in prepare_for_round
         self.enable_final_projection = True  # Whether to apply final projection after optimization (only for Lagrangian mode)
         self.enable_light_projection_in_loop = True  # Whether to apply light projection within optimization loop (only for Lagrangian mode)
         
@@ -336,7 +344,8 @@ class AttackerClient(Client):
         # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
         # Reason: Prevent λ and ρ from accumulating across rounds, which causes numerical instability and optimization imbalance
         # Optimization: Use adaptive λ initialization based on previous round's violation to provide better starting point
-        if self.use_lagrangian_dual and self.lambda_init_value is not None and self.rho_init_value is not None:
+        # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_init_value check =====
+        if self.use_lagrangian_dual and self.lambda_init_value is not None:  # Removed rho_init_value check
             # Adaptive λ initialization: if last round had large violation, use larger initial λ
             if self.last_violation is not None and self.d_T is not None and self.last_violation > self.d_T * 1.5:
                 # Estimate required λ based on violation magnitude and optimization steps
@@ -353,7 +362,9 @@ class AttackerClient(Client):
                           f"(based on last violation: {self.last_violation:.4f})")
             else:
                 self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
-            self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
+            # ==========================================
 
     def receive_benign_updates(self, updates: List[torch.Tensor], client_ids: Optional[List[int]] = None):
         """
@@ -425,51 +436,55 @@ class AttackerClient(Client):
         del benign_updates_gpu, benign_stack, benign_mean
         torch.cuda.empty_cache()
         
+        # ===== CONSTRAINT (4c) COMMENTED OUT: Always use all updates =====
         # If gamma is not set, use all updates
-        if self.gamma is None:
-            return self.benign_updates
-        
-        # Convert gamma to capacity
-        capacity = float(self.gamma)
-        n = len(distances)
-        
-        # Handle edge cases
-        if n == 0:
-            return []
-        if capacity <= 0:
-            # If capacity is 0 or negative, select item with minimum distance
-            min_idx = np.argmin(distances)
-            return [self.benign_updates[min_idx]]
-        
-        # For 0-1 Knapsack with minimization objective:
-        # We want to minimize sum of selected distances, subject to sum ≤ capacity
-        # This is equivalent to: maximize number of items selected (or maximize sum of unselected)
-        # while keeping sum of selected ≤ capacity
-        
-        # Greedy approach: sort by distance and select items until capacity is reached
-        # This gives a good approximation and is efficient
-        sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
-        
-        selected_indices = []
-        total_dist = 0.0
-        
-        for idx in sorted_indices:
-            d = distances[idx]
-            if total_dist + d <= capacity:
-                selected_indices.append(idx)
-                total_dist += d
-            else:
-                break
-        
-        # If no items selected (all distances > capacity), select the one with minimum distance
-        if not selected_indices:
-            min_idx = np.argmin(distances)
-            selected_indices = [min_idx]
-        
-        # Return selected updates
-        selected = [self.benign_updates[i] for i in sorted(selected_indices)]
-        
-        return selected
+        # if self.gamma is None:
+        #     return self.benign_updates
+        # 
+        # # Convert gamma to capacity
+        # capacity = float(self.gamma)
+        # n = len(distances)
+        # 
+        # # Handle edge cases
+        # if n == 0:
+        #     return []
+        # if capacity <= 0:
+        #     # If capacity is 0 or negative, select item with minimum distance
+        #     min_idx = np.argmin(distances)
+        #     return [self.benign_updates[min_idx]]
+        # 
+        # # For 0-1 Knapsack with minimization objective:
+        # # We want to minimize sum of selected distances, subject to sum ≤ capacity
+        # # This is equivalent to: maximize number of items selected (or maximize sum of unselected)
+        # # while keeping sum of selected ≤ capacity
+        # 
+        # # Greedy approach: sort by distance and select items until capacity is reached
+        # # This gives a good approximation and is efficient
+        # sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
+        # 
+        # selected_indices = []
+        # total_dist = 0.0
+        # 
+        # for idx in sorted_indices:
+        #     d = distances[idx]
+        #     if total_dist + d <= capacity:
+        #         selected_indices.append(idx)
+        #         total_dist += d
+        #     else:
+        #         break
+        # 
+        # # If no items selected (all distances > capacity), select the one with minimum distance
+        # if not selected_indices:
+        #     min_idx = np.argmin(distances)
+        #     selected_indices = [min_idx]
+        # 
+        # # Return selected updates
+        # selected = [self.benign_updates[i] for i in sorted(selected_indices)]
+        # 
+        # return selected
+        # ====================================================================
+        # Since constraint (4c) is disabled, always return all benign updates
+        return self.benign_updates
     
     def _get_selected_benign_indices(self) -> List[int]:
         """
@@ -507,42 +522,46 @@ class AttackerClient(Client):
         del benign_updates_gpu, benign_stack, benign_mean
         torch.cuda.empty_cache()
         
+        # ===== CONSTRAINT (4c) COMMENTED OUT: Always return all indices =====
         # If gamma is not set, use all updates
-        if self.gamma is None:
-            return list(range(len(self.benign_updates)))
-        
-        # Convert gamma to capacity
-        capacity = float(self.gamma)
-        n = len(distances)
-        
-        # Handle edge cases
-        if n == 0:
-            return []
-        if capacity <= 0:
-            # If capacity is 0 or negative, select item with minimum distance
-            min_idx = np.argmin(distances)
-            return [int(min_idx)]
-        
-        # Greedy approach: sort by distance and select items until capacity is reached
-        sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
-        
-        selected_indices = []
-        total_dist = 0.0
-        
-        for idx in sorted_indices:
-            d = distances[idx]
-            if total_dist + d <= capacity:
-                selected_indices.append(int(idx))
-                total_dist += d
-            else:
-                break
-        
-        # If no items selected (all distances > capacity), select the one with minimum distance
-        if not selected_indices:
-            min_idx = np.argmin(distances)
-            selected_indices = [int(min_idx)]
-        
-        return sorted(selected_indices)
+        # if self.gamma is None:
+        #     return list(range(len(self.benign_updates)))
+        # 
+        # # Convert gamma to capacity
+        # capacity = float(self.gamma)
+        # n = len(distances)
+        # 
+        # # Handle edge cases
+        # if n == 0:
+        #     return []
+        # if capacity <= 0:
+        #     # If capacity is 0 or negative, select item with minimum distance
+        #     min_idx = np.argmin(distances)
+        #     return [int(min_idx)]
+        # 
+        # # Greedy approach: sort by distance and select items until capacity is reached
+        # sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
+        # 
+        # selected_indices = []
+        # total_dist = 0.0
+        # 
+        # for idx in sorted_indices:
+        #     d = distances[idx]
+        #     if total_dist + d <= capacity:
+        #         selected_indices.append(int(idx))
+        #         total_dist += d
+        #     else:
+        #         break
+        # 
+        # # If no items selected (all distances > capacity), select the one with minimum distance
+        # if not selected_indices:
+        #     min_idx = np.argmin(distances)
+        #     selected_indices = [int(min_idx)]
+        # 
+        # return sorted(selected_indices)
+        # =====================================================================
+        # Since constraint (4c) is disabled, always return all indices
+        return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
@@ -1244,21 +1263,29 @@ class AttackerClient(Client):
         
         Args:
             d_T: Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-            gamma: Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # gamma: Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+            gamma: Temporarily disabled (constraint 4c is commented out)
+            # ==========================================
             total_data_size: D(t) - Total data size for aggregation weight calculation (Paper Formula (2))
             benign_data_sizes: Dict {client_id: D_i(t)} - Data sizes for each benign client (Paper Formula (2))
         """
         self.d_T = d_T  # Constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        self.gamma = gamma  # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # self.gamma = gamma  # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        self.gamma = gamma  # Temporarily disabled (constraint 4c is commented out)
+        # ==========================================
         self.total_data_size = total_data_size  # D(t) for weight calculation
         if benign_data_sizes is not None:
             self.benign_data_sizes = benign_data_sizes  # {client_id: D_i(t)}
     
     def set_lagrangian_params(self, use_lagrangian_dual: bool = False,
                               lambda_init: float = 0.1,
-                              rho_init: float = 0.1,
+                              # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                              # rho_init: float = 0.1,
                               lambda_lr: float = 0.01,
-                              rho_lr: float = 0.01,
+                              # rho_lr: float = 0.01,
+                              # ==========================================
                               enable_final_projection: bool = True,
                               enable_light_projection_in_loop: bool = True):
         """
@@ -1267,14 +1294,18 @@ class AttackerClient(Client):
         Paper reference: Section 3, Algorithm 1
         - Lagrangian function: eq:lagrangian
         - Optimization subproblem: eq:wprime_sub
-        - Initialization: λ(1)≥0, ρ(1)≥0
+        - Initialization: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
         
         Args:
             use_lagrangian_dual: Whether to use Lagrangian Dual mechanism
             lambda_init: Initial λ(1) value (≥0, per paper Algorithm 1)
-            rho_init: Initial ρ(1) value (≥0, per paper Algorithm 1)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # rho_init: Initial ρ(1) value (≥0, per paper Algorithm 1)
+            # ==========================================
             lambda_lr: Learning rate for λ(t) update (subgradient step size)
-            rho_lr: Learning rate for ρ(t) update (subgradient step size)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # rho_lr: Learning rate for ρ(t) update (subgradient step size)
+            # ==========================================
             enable_final_projection: Whether to apply final projection after optimization (only for Lagrangian mode)
                                    If False, completely relies on Lagrangian mechanism (no final projection)
             enable_light_projection_in_loop: Whether to apply light projection within optimization loop (only for Lagrangian mode)
@@ -1284,14 +1315,23 @@ class AttackerClient(Client):
         """
         self.use_lagrangian_dual = use_lagrangian_dual
         if use_lagrangian_dual:
-            # Paper: λ(1)≥0, ρ(1)≥0
+            # Paper: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
             # Modification 2: Save initial values for reset each round
             self.lambda_init_value = max(0.0, lambda_init)
-            self.rho_init_value = max(0.0, rho_init)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # self.rho_init_value = max(0.0, rho_init)
+            self.rho_init_value = None  # Temporarily disabled (constraint 4c is commented out)
+            # ==========================================
             self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
-            self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
+            self.rho_dt = None  # Temporarily disabled (constraint 4c is commented out)
+            # ==========================================
             self.lambda_lr = lambda_lr
-            self.rho_lr = rho_lr
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # self.rho_lr = rho_lr
+            # self.rho_lr is already set to 0.01 in __init__, but not used since constraint 4c is disabled
+            # ==========================================
             self.enable_final_projection = enable_final_projection
             self.enable_light_projection_in_loop = enable_light_projection_in_loop
         else:
@@ -1818,93 +1858,41 @@ class AttackerClient(Client):
         constraint_c_value_for_update = 0.0  # Used for updating ρ
         constraint_c_term_base = None  # Cached base term for Lagrangian mode (on GPU)
         
-        if self.gamma is not None and len(selected_benign) > 0:
-            # Compute constraint (4c) value once before loop (constant value)
-            # Paper constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-            # where w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) is the weighted mean of ALL benign clients
-            # (not just selected ones)
-            
-            # Step 1: Compute weighted mean of ALL benign clients: w̄_i(t) = Σ (D_i/D) w_i(t)
-            # Note: This uses all benign_updates, not just selected_benign
-            if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
-                D_total = float(self.total_data_size)
-                # Compute weighted sum of all benign updates
-                benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
-                benign_stack = torch.stack(benign_updates_gpu)
-                weighted_mean = torch.zeros_like(benign_stack[0])
-                
-                for idx, benign_update in enumerate(self.benign_updates):
-                    # Get client_id for this update
-                    if idx < len(self.benign_update_client_ids):
-                        client_id = self.benign_update_client_ids[idx]
-                        # Get data size for this client
-                        D_i = self.benign_data_sizes.get(client_id, 1.0)
-                        weight = D_i / D_total
-                    else:
-                        # Fallback: use equal weight if client_id not available
-                        weight = 1.0 / len(self.benign_updates)
-                    
-                    # Add weighted update
-                    weighted_mean = weighted_mean + weight * benign_update.to(self.device)
-                
-                # Clean up temporary GPU references
-                del benign_updates_gpu, benign_stack
-                
-            else:
-                # Fallback: use simple mean if data sizes not available
-                sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-                sel_stack = torch.stack(sel_benign_gpu)
-                weighted_mean = sel_stack.mean(dim=0)
-                del sel_benign_gpu, sel_stack
-            
-            # Step 2: Compute distances d(w_i(t), w̄_i(t)) for each selected benign client
-            sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-            distances = []
-            for idx, benign_update in enumerate(selected_benign):
-                # Get the index in beta_selection to find original client_id
-                if idx < len(beta_selection):
-                    original_idx = beta_selection[idx]
-                    # Get distance: d(w_i(t), w̄_i(t))
-                    dist = torch.norm(benign_update.to(self.device) - weighted_mean)
-                    distances.append(dist)
-                else:
-                    # Fallback: compute distance anyway
-                    dist = torch.norm(benign_update.to(self.device) - weighted_mean)
-                    distances.append(dist)
-            
-            # Step 3: Sum distances: Σ β'_{i,j}(t) d(w_i(t), w̄_i(t))
-            if len(distances) > 0:
-                distances_tensor = torch.stack(distances)
-                agg_dist = distances_tensor.sum()  # Σ β'_{i,j}(t)^* d(...)
-            else:
-                agg_dist = torch.tensor(0.0, device=self.device)
-            
-            constraint_c_value_for_update = agg_dist.item()
-            
-            # For Lagrangian mode, cache the base term on GPU to avoid recomputation
-            if self.use_lagrangian_dual:
-                constraint_c_term_base = agg_dist  # Keep on GPU for reuse in loop
-            else:
-                # Hard constraint mode: release GPU memory immediately
-                del sel_benign_gpu, distances, weighted_mean
-                if 'distances_tensor' in locals():
-                    del distances_tensor
-                torch.cuda.empty_cache()
+        # ===== CONSTRAINT (4c) COMMENTED OUT =====
+        # if self.gamma is not None and len(selected_benign) > 0:
+        #     # Compute constraint (4c) value once before loop (constant value)
+        #     # Paper constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
+        #     # where w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) is the weighted mean of ALL benign clients
+        #     # (not just selected ones)
+        #     ...
+        #     constraint_c_value_for_update = agg_dist.item()
+        #     
+        #     # For Lagrangian mode, cache the base term on GPU to avoid recomputation
+        #     if self.use_lagrangian_dual:
+        #         constraint_c_term_base = agg_dist  # Keep on GPU for reuse in loop
+        #     else:
+        #         ...
+        # ==========================================
+        constraint_c_value_for_update = 0.0  # Dummy value since constraint (4c) is disabled
+        constraint_c_term_base = None  # Dummy value since constraint (4c) is disabled
         
         # OPTIMIZATION 5: Cache Lagrangian multipliers on GPU before loop
         # Ensure multipliers are on correct device to avoid repeated conversions
-        if self.use_lagrangian_dual and self.lambda_dt is not None and self.rho_dt is not None:
+        # ===== CONSTRAINT (4c) COMMENTED OUT: Only check lambda_dt =====
+        if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
             if isinstance(self.lambda_dt, torch.Tensor):
                 if not self._device_matches(self.lambda_dt.device, target_device):
                     self.lambda_dt = self.lambda_dt.to(target_device)
             else:
                 self.lambda_dt = torch.tensor(self.lambda_dt, device=target_device)
             
-            if isinstance(self.rho_dt, torch.Tensor):
-                if not self._device_matches(self.rho_dt.device, target_device):
-                    self.rho_dt = self.rho_dt.to(target_device)
-            else:
-                self.rho_dt = torch.tensor(self.rho_dt, device=target_device)
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # if isinstance(self.rho_dt, torch.Tensor):
+            #     if not self._device_matches(self.rho_dt.device, target_device):
+            #         self.rho_dt = self.rho_dt.to(target_device)
+            # else:
+            #     self.rho_dt = torch.tensor(self.rho_dt, device=target_device)
+            # ==========================================
         
         for step in range(self.proxy_steps):
             proxy_opt.zero_grad()
@@ -1943,12 +1931,14 @@ class AttackerClient(Client):
                 self._ensure_model_on_device(self.model, target_device)
                 device_mismatch_before_backward = True
             
-            if self.use_lagrangian_dual and self.lambda_dt is not None and self.rho_dt is not None:
+            if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
                 # ========== Use Lagrangian Dual mechanism (paper eq:lagrangian and eq:wprime_sub) ==========
                 
                 # OPTIMIZATION 5: Use cached multipliers directly (already on correct device)
                 lambda_dt_tensor = self.lambda_dt  # Direct use, no conversion needed
-                rho_dt_tensor = self.rho_dt  # Direct use, no conversion needed
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                # rho_dt_tensor = self.rho_dt  # Direct use, no conversion needed
+                # ==========================================
                 
                 # Constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
                 # Paper Constraint (4b): d(w'_j, w'_g) = ||w'_j - w'_g||
@@ -1964,34 +1954,40 @@ class AttackerClient(Client):
                 # Since λ d_T is constant, we use: minimize -F(w'_g) + λ d(w'_j, w'_g)
                 constraint_b_term = lambda_dt_tensor * dist_to_global_for_objective
                 
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
                 # For constraint (4c): Σ(...) - Γ ≤ 0, so L = F(w'_g) - ρ (Σ(...) - Γ)
                 # Converting to minimization: minimize -L = -F(w'_g) + ρ (Σ(...) - Γ)
                 # Since ρ Γ is constant, we use: minimize -F(w'_g) + ρ Σ(...)
                 # OPTIMIZATION 2: Use cached constraint (4c) value (computed before loop)
-                constraint_c_term = torch.tensor(0.0, device=self.device)
-                if constraint_c_term_base is not None:
-                    # Use cached base term (already on GPU)
-                    constraint_c_term = rho_dt_tensor * constraint_c_term_base
+                # constraint_c_term = torch.tensor(0.0, device=self.device)
+                # if constraint_c_term_base is not None:
+                #     # Use cached base term (already on GPU)
+                #     constraint_c_term = rho_dt_tensor * constraint_c_term_base
+                constraint_c_term = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
+                # ==========================================
                 
                 # ============================================================
                 # Build Lagrangian objective function (paper formula eq:wprime_sub)
                 # ============================================================
                 # Paper: maximize F(w'_g(t)) subject to constraints
-                # Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)
-                # Converting to minimization: minimize -L = -F(w'_g) + λ d(w'_j, w'_g) + ρ Σ(...)
+                # Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)  [ρ term removed]
+                # Converting to minimization: minimize -L = -F(w'_g) + λ d(w'_j, w'_g) + ρ Σ(...)  [ρ term removed]
                 # (constant terms λ d_T and ρ Γ are omitted as they don't affect optimization direction)
-                lagrangian_objective = -global_loss + constraint_b_term + constraint_c_term
+                lagrangian_objective = -global_loss + constraint_b_term  # Removed constraint_c_term
                 
                 # ============================================================
                 # ============================================================
                 # Compute constraint violations (for updating λ and ρ)
                 # ============================================================
                 constraint_b_violation = F.relu(dist_to_global_for_objective - self.d_T) if self.d_T is not None else torch.tensor(0.0, device=self.device)
-            
-            constraint_c_violation = torch.tensor(0.0, device=self.device)
-            if self.gamma is not None and len(selected_benign) > 0:
-                    constraint_c_violation = F.relu(torch.tensor(constraint_c_value_for_update, device=self.device) - self.gamma)
+                
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                # constraint_c_violation = torch.tensor(0.0, device=self.device)
+                # if self.gamma is not None and len(selected_benign) > 0:
+                #         constraint_c_violation = F.relu(torch.tensor(constraint_c_value_for_update, device=self.device) - self.gamma)
+                constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
+                # ==========================================
                 
             else:
                 # ========== Use hard constraint projection mechanism (original logic) ==========
@@ -2007,11 +2003,14 @@ class AttackerClient(Client):
                 ) if self.d_T is not None else torch.tensor(0.0, device=self.device)
                 constraint_b_violation = F.relu(dist_to_global - self.d_T) if self.d_T is not None else torch.tensor(0.0, device=self.device)
                 
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # OPTIMIZATION 6: Constraint (4c) calculation moved to after loop for hard constraint mode
                 # In hard constraint mode, constraint (4c) is only used for logging, not in optimization
                 # So we can delay its computation until after the loop
-                constraint_c_violation = torch.tensor(0.0, device=self.device)
+                # constraint_c_violation = torch.tensor(0.0, device=self.device)
                 # constraint_c_value_for_update is already computed before loop (for Lagrangian mode compatibility)
+                constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
+                # ==========================================
             
             # CRITICAL: Before backward pass, ensure ALL model parameters and buffers are on GPU
             # This is essential for LoRA models where nested structures might have been affected
@@ -2050,7 +2049,8 @@ class AttackerClient(Client):
             # Use subgradient method according to paper dual problem
             # Paper Algorithm 1 Step 7: Update λ(t) and ρ(t) according to eq:dual
             # ============================================================
-            if self.use_lagrangian_dual and self.lambda_dt is not None and self.rho_dt is not None:
+            # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_dt check =====
+            if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
                 # Dual ascent method: λ(t+1) = λ(t) + α_λ × subgradient
                 # subgradient = (constraint value - bound)
                 # When constraint is violated (constraint value > bound), subgradient > 0, λ increases to penalize violation
@@ -2073,15 +2073,17 @@ class AttackerClient(Client):
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
                     self.lambda_dt = torch.tensor(new_lambda, device=target_device, requires_grad=False)
                 
-                if self.gamma is not None and len(selected_benign) > 0:
-                    rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
-                    # Subgradient: Σ(...) - Γ
-                    # If constraint is violated (Σ(...) > Γ), subgradient > 0, ρ increases
-                    subgradient_c = constraint_c_value_for_update - self.gamma
-                    new_rho = rho_val + self.rho_lr * subgradient_c
-                    new_rho = max(0.0, new_rho)  # Ensure non-negative
-                    # OPTIMIZATION 5: Keep multiplier on same device when updating
-                    self.rho_dt = torch.tensor(new_rho, device=target_device, requires_grad=False)
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                # if self.gamma is not None and len(selected_benign) > 0:
+                #     rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
+                #     # Subgradient: Σ(...) - Γ
+                #     # If constraint is violated (Σ(...) > Γ), subgradient > 0, ρ increases
+                #     subgradient_c = constraint_c_value_for_update - self.gamma
+                #     new_rho = rho_val + self.rho_lr * subgradient_c
+                #     new_rho = max(0.0, new_rho)  # Ensure non-negative
+                #     # OPTIMIZATION 5: Keep multiplier on same device when updating
+                #     self.rho_dt = torch.tensor(new_rho, device=target_device, requires_grad=False)
+                # ==========================================
             
             # ============================================================
             # Modification 4: Add constraint safeguard mechanism within optimization loop (Lagrangian framework)
@@ -2237,7 +2239,10 @@ class AttackerClient(Client):
             # Hard constraint mode: compute here (only needed for logging)
             # Use the same calculation as in Lagrangian mode for consistency
             constraint_c_value = torch.tensor(0.0, device=self.device)
-            if self.gamma is not None and len(selected_benign) > 0:
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # if self.gamma is not None and len(selected_benign) > 0:
+            if False:  # Temporarily disabled (constraint 4c is commented out, gamma is None)
+                # ===== CONSTRAINT (4c) COMMENTED OUT: All computation below is disabled =====
                 # Compute constraint (4c) value using weighted mean of ALL benign clients
                 # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean of ALL benign clients)
                 if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
@@ -2271,6 +2276,7 @@ class AttackerClient(Client):
                     # Clean up GPU references
                     del sel_benign_gpu, sel_stack, sel_mean, distances
                 torch.cuda.empty_cache()
+                # ==========================================
         
         malicious_norm = torch.norm(malicious_update).item()
         log_msg = f"    [Attacker {self.client_id}] GRMP Attack: " \
@@ -2279,10 +2285,14 @@ class AttackerClient(Client):
                   f"constraint_c={constraint_c_value.item():.4f}"
         
         # If using the Lagrangian mechanism, display the multiplier value
-        if self.use_lagrangian_dual and self.lambda_dt is not None and self.rho_dt is not None:
+        # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_dt check and rho display =====
+        if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
             lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
-            rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
-            log_msg += f", λ={lambda_val:.4f}, ρ={rho_val:.4f}"
+            # ===== CONSTRAINT (4c) COMMENTED OUT =====
+            # rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
+            # log_msg += f", λ={lambda_val:.4f}, ρ={rho_val:.4f}"
+            log_msg += f", λ={lambda_val:.4f} [Constraint 4c disabled]"
+            # ==========================================
         
         print(log_msg)
         

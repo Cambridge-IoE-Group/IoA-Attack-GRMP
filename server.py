@@ -487,12 +487,17 @@ class Server:
                 client.set_global_model_params(global_params)
                 # Set constraint parameters: d_T, gamma, total_data_size, and benign_data_sizes
                 # d_T: distance threshold for proximity constraint (4b)
+                # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # gamma: upper bound for aggregation distance constraint (4c)
+                # ==========================================
                 # total_data_size: D(t) for Formula (2) and (3)
                 # benign_data_sizes: {client_id: D_i(t)} for Formula (2) and (3)
                 client.set_constraint_params(
                     d_T=self.d_T, 
-                    gamma=self.gamma,
+                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
+                    # gamma=self.gamma,
+                    gamma=None,  # Temporarily disabled (constraint 4c is commented out)
+                    # ==========================================
                     total_data_size=total_data_size,
                     benign_data_sizes=benign_data_sizes
                 )
