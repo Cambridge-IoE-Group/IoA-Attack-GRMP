@@ -864,30 +864,27 @@ class AttackerClient(Client):
             return
         
         # Step 1: Build LoRA parameter metadata (trainable parameters only)
+        # CRITICAL: Must use named_parameters() order to match get_flat_params()
+        # get_flat_params() in models.py uses: torch.cat([p.data.view(-1) for p in self.model.parameters() if p.requires_grad])
+        # But we need to match by name, so we use named_parameters() with filtering
         self.lora_param_names = []
         self.lora_param_shapes = {}
         self.lora_param_numels = {}
+        self.lora_param_slices = {}
         offset = 0
         
-        # Collect LoRA parameters in the same order as get_flat_params()
-        for param in self.model.parameters():
-            if param.requires_grad:
-                name = None
-                # Find parameter name by matching object identity
-                for n, p in self.model.named_parameters():
-                    if p is param:
-                        name = n
-                        break
-                
-                if name is None:
-                    raise RuntimeError(f"[Attacker {self.client_id}] Failed to find name for LoRA parameter")
-                
-                numel = int(param.numel())
-                self.lora_param_names.append(name)
-                self.lora_param_shapes[name] = param.shape
-                self.lora_param_numels[name] = numel
-                self.lora_param_slices[name] = slice(offset, offset + numel)
-                offset += numel
+        # CRITICAL: Use named_parameters() order to ensure consistency with get_flat_params()
+        # Filter trainable parameters and collect in same order as get_flat_params()
+        trainables = [(n, p) for n, p in self.model.named_parameters() if p.requires_grad]
+        
+        # Build metadata using trainables order (same as get_flat_params())
+        for name, param in trainables:
+            numel = int(param.numel())
+            self.lora_param_names.append(name)
+            self.lora_param_shapes[name] = param.shape
+            self.lora_param_numels[name] = numel
+            self.lora_param_slices[name] = slice(offset, offset + numel)
+            offset += numel
         
         # Step 2: Build base parameters dict (frozen parameters, detached)
         self.base_params = {}
@@ -991,8 +988,12 @@ class AttackerClient(Client):
         # Ensure shapes match: flatten to 1D and check dimension
         malicious_update = malicious_update.view(-1)  # Flatten to 1D (O(1), just view change)
         if not skip_dim_check and int(malicious_update.numel()) != self._flat_numel:
-            # Dimension mismatch: return zero loss to avoid errors
-            print(f"    [Attacker {self.client_id}] Proxy loss dimension mismatch: got {malicious_update.numel()}, expected {self._flat_numel}")
+            use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
+            msg = (f"    [Attacker {self.client_id}] Proxy loss dimension mismatch: "
+                   f"got {malicious_update.numel()}, expected {self._flat_numel}")
+            if use_lora:
+                raise RuntimeError(msg)
+            print(msg)
             return torch.tensor(0.0, device=self.device)
 
         # Move model to GPU temporarily for proxy loss calculation
@@ -1292,6 +1293,21 @@ class AttackerClient(Client):
             else:
                 result = total_loss / batches
         except Exception as e:
+            # ============================================================
+            # CRITICAL: LoRA mode failures must raise, not return 0 loss
+            # ============================================================
+            # If LoRA mode, functional_call failure indicates FATAL error
+            # Must raise to prevent silent optimization failure
+            use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
+            if use_lora:
+                error_msg = (
+                    f"[Attacker {self.client_id}] FATAL: LoRA functional_call failed in _proxy_global_loss: {e}\n"
+                    f"LoRA mode requires functional_call to work - this is a configuration error.\n"
+                    f"Cannot continue optimization with broken gradient link."
+                )
+                raise RuntimeError(error_msg) from e
+            
+            # Non-LoRA mode: Allow fallback (for backward compatibility)
             print(f"    [Attacker {self.client_id}] Error in proxy loss computation: {e}")
             result = torch.tensor(0.0, device=self.device)
         finally:
@@ -1426,10 +1442,70 @@ class AttackerClient(Client):
         return adj_recon.detach()  # Return reconstructed adjacency for GSP
 
     def set_global_model_params(self, global_params: torch.Tensor):
-        """Set global model parameters for constraint (4b) calculation."""
-        # Store on GPU but only when needed (will be moved in _proxy_global_loss)
-        # Keep on same device as provided to avoid unnecessary transfers
-        self.global_model_params = global_params.clone().detach().to(self.device)
+        """
+        Set global model parameters for constraint (4b) calculation.
+        
+        CRITICAL: In LoRA mode, converts full-model flat to LoRA-only flat.
+        This ensures consistency with proxy_param and malicious_update (both are LoRA-only).
+        
+        Args:
+            global_params: Global model parameters (full-model flat in non-LoRA mode,
+                          may be full-model or LoRA-only flat in LoRA mode)
+        """
+        use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
+        
+        if use_lora:
+            # LoRA mode: Convert to LoRA-only flat
+            # Strategy: If input is full-model flat, extract LoRA params using named_parameters()
+            # If input is already LoRA-only flat and matches _flat_numel, use as-is
+            
+            input_numel = int(global_params.numel())
+            
+            if input_numel == self._flat_numel:
+                # Already LoRA-only flat, use directly
+                self.global_model_params = global_params.clone().detach().to(self.device)
+            else:
+                # Full-model flat: Extract LoRA parameters in same order as get_flat_params()
+                # CRITICAL: Must match get_flat_params() order exactly
+                trainables = [(n, p) for n, p in self.model.named_parameters() if p.requires_grad]
+                
+                # Reconstruct full model params from flat (temporarily)
+                # This is needed to extract LoRA params correctly
+                # Note: This is a workaround - ideally server should send LoRA-only flat
+                full_model_params = {}
+                offset = 0
+                for name, param in self.model.named_parameters():
+                    numel = int(param.numel())
+                    full_model_params[name] = global_params[offset:offset + numel].view_as(param.data)
+                    offset += numel
+                
+                # CRITICAL: Verify offset matches input length (catches silent misalignment)
+                if offset != input_numel:
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] Full-model global_params length mismatch: "
+                        f"consumed {offset}, provided {input_numel}. Check flatten order."
+                    )
+                
+                # Extract LoRA parameters in order
+                lora_params_flat = []
+                for name, param in trainables:
+                    if name in full_model_params:
+                        lora_params_flat.append(full_model_params[name].view(-1))
+                    else:
+                        raise RuntimeError(
+                            f"[Attacker {self.client_id}] LoRA parameter {name} not found in full_model_params"
+                        )
+                
+                # Concatenate LoRA params to form LoRA-only flat
+                self.global_model_params = torch.cat(lora_params_flat).clone().detach().to(self.device)
+                
+                # Verify dimension matches
+                assert self.global_model_params.numel() == self._flat_numel, \
+                    f"[Attacker {self.client_id}] LoRA extraction failed: " \
+                    f"expected {self._flat_numel}, got {self.global_model_params.numel()}"
+        else:
+            # Non-LoRA mode: Use as-is
+            self.global_model_params = global_params.clone().detach().to(self.device)
     
     def set_constraint_params(self, d_T: float = None, gamma: float = None, 
                               total_data_size: float = None, benign_data_sizes: dict = None):
@@ -2003,6 +2079,23 @@ class AttackerClient(Client):
         # STEP 7: Optimize w'_j(t) to maximize F(w'_g(t))
         # According to paper Equation 12, we maximize F(w'_g(t)) subject to constraints
         # ============================================================
+        # CRITICAL: Hard preconditions check before optimization
+        # LoRA mode requires strict gradient validation, so we must ensure prerequisites
+        if self.global_model_params is None or self.proxy_loader is None:
+            raise RuntimeError(
+                f"[Attacker {self.client_id}] Missing global_model_params or proxy_loader before optimization. "
+                f"Cannot proceed with LoRA gradient validation requirements."
+            )
+        
+        # Verify global_model_params dimension matches _flat_numel (LoRA mode requirement)
+        use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
+        if use_lora:
+            if self.global_model_params.numel() != self._flat_numel:
+                raise RuntimeError(
+                    f"[Attacker {self.client_id}] LoRA mode: global_model_params dimension mismatch: "
+                    f"got {self.global_model_params.numel()}, expected {self._flat_numel}. "
+                    f"Check set_global_model_params() conversion."
+                )
         proxy_lr = self.proxy_step
         # Add small client-specific perturbation to initial malicious_update to ensure diversity
         # This helps different attackers converge to different local optima
@@ -2087,7 +2180,10 @@ class AttackerClient(Client):
             # ==========================================
         
         for step in range(self.proxy_steps):
-            proxy_opt.zero_grad()
+            # ============================================================
+            # CRITICAL: Zero gradients using set_to_none=True for efficiency
+            # ============================================================
+            proxy_opt.zero_grad(set_to_none=True)
             
             # OPTIMIZATION 4: Reduce device check frequency (every 5 steps instead of every step)
             # Model should remain on GPU during optimization loop, so full check is rarely needed
@@ -2112,16 +2208,6 @@ class AttackerClient(Client):
             # ============================================================
             # Build optimization objective: choose mechanism based on whether using Lagrangian Dual
             # ============================================================
-            
-            # OPTIMIZATION 4: Device check before backward (only if needed)
-            # Full device check is expensive, but we need it before backward for LoRA models
-            # Check every step before backward to ensure correctness
-            device_mismatch_before_backward = False
-            sample_param_before_backward = next(iter(self.model.parameters()), None)
-            if sample_param_before_backward is not None and not self._device_matches(sample_param_before_backward.device, target_device):
-                # If mismatch detected, perform full check
-                self._ensure_model_on_device(self.model, target_device)
-                device_mismatch_before_backward = True
             
             if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
                 # ========== Use Lagrangian Dual mechanism (paper eq:lagrangian and eq:wprime_sub) ==========
@@ -2204,81 +2290,59 @@ class AttackerClient(Client):
                 constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
                 # ==========================================
             
-            # CRITICAL: Before backward pass, ensure ALL model parameters and buffers are on GPU
-            # This is essential for LoRA models where nested structures might have been affected
-            # The computation graph created during forward pass references these parameters
-            # If any parameter is on CPU during backward, we'll get a device mismatch error
-            # OPTIMIZATION 4: Only perform full check if mismatch was detected by sample check
-            if device_mismatch_before_backward:
-                for name, param in self.model.named_parameters():
-                    if not self._device_matches(param.device, target_device):
-                        print(f"    [Attacker {self.client_id}] CRITICAL PRE-BACKWARD: Parameter {name} on {param.device}, forcing to {target_device}")
-                        with torch.no_grad():
-                            param.data = param.data.to(target_device, non_blocking=True)
-                for name, buffer in self.model.named_buffers():
-                    if not self._device_matches(buffer.device, target_device):
-                        print(f"    [Attacker {self.client_id}] CRITICAL PRE-BACKWARD: Buffer {name} on {buffer.device}, forcing to {target_device}")
-                        buffer.data = buffer.data.to(target_device, non_blocking=True)
-                print(f"    [Attacker {self.client_id}] WARNING: Fixed device mismatches before backward pass")
-                # Final recursive check to ensure everything is consistent
-                self._ensure_model_on_device(self.model, target_device)
-                # One more model.to() to be absolutely sure
-                self.model.to(target_device)
+            # ============================================================
+            # CRITICAL: Compute gradients using torch.autograd.grad (NO backward())
+            # ============================================================
+            # PROHIBITED: Cannot use backward() twice on the same graph
+            # Solution: Use autograd.grad() once, manually set proxy_param.grad
+            # If we need to verify gradient link (every 5 steps in LoRA mode), retain graph for second check
+            need_check = bool(self._use_lora_in_optimization and (step % 5 == 0))
+            
+            try:
+                grad = torch.autograd.grad(
+                    lagrangian_objective,
+                    proxy_param,
+                    retain_graph=need_check,   # <-- keep graph only when we will do an extra check
+                    allow_unused=False,
+                    create_graph=False
+                )[0]
+                proxy_param.grad = grad
+            except RuntimeError as e:
+                if "second time" in str(e) or "already been freed" in str(e):
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] FATAL: Graph already used - double backward detected at step {step}. "
+                        f"Check for multiple backward/grad passes on the same graph."
+                    ) from e
+                raise
             
             # ============================================================
-            # Backpropagation and parameter update
+            # Hard acceptance criteria for LoRA mode
             # ============================================================
-            # Backpropagate Lagrangian objective
-            lagrangian_objective.backward()
-            
-            # ===== CRITICAL: Gradient verification (strict check) =====
-            # This ensures the computational graph is intact and proxy_param receives gradients
-            if proxy_param.grad is not None:
+            if self._use_lora_in_optimization:
+                if proxy_param.grad is None:
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] FATAL at step {step}: proxy_param.grad is None in LoRA mode."
+                    )
                 grad_norm = proxy_param.grad.norm().item()
                 if grad_norm < 1e-8:
-                    print(f"      [Attacker {self.client_id}] ERROR: Gradient norm is too small ({grad_norm:.2e})")
-                    print(f"      [Attacker {self.client_id}] This indicates gradient flow is broken!")
-                    # In LoRA mode, this should NEVER happen with functional_call
-                    if self._use_lora_in_optimization:
-                        print(f"      [Attacker {self.client_id}] FATAL: LoRA functional_call gradient check failed at step {step}")
-            else:
-                print(f"      [Attacker {self.client_id}] ERROR: proxy_param.grad is None!")
-                print(f"      [Attacker {self.client_id}] Optimization is broken - no gradients computed")
-                if self._use_lora_in_optimization:
-                    print(f"      [Attacker {self.client_id}] FATAL: LoRA functional_call produced no gradients at step {step}")
-            
-            # Additional gradient verification: Direct gradient computation check (every 5 steps)
-            # This verifies that global_loss -> proxy_param gradient exists
-            # CRITICAL: This check ensures the computational graph is intact
-            if step % 5 == 0 and self._use_lora_in_optimization:
-                try:
-                    # Save current gradient state
-                    current_grad = proxy_param.grad.clone() if proxy_param.grad is not None else None
-                    # Clear previous gradients for clean check
-                    if proxy_param.grad is not None:
-                        proxy_param.grad.zero_()
-                    # Compute gradient directly from global_loss (without constraint terms)
-                    # This isolates the gradient flow through the proxy loss
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] FATAL at step {step}: Gradient norm too small ({grad_norm:.2e})."
+                    )
+
+                # Additional gradient-link verification (only when need_check=True)
+                if need_check:
                     g = torch.autograd.grad(
-                        global_loss, 
-                        proxy_param, 
-                        retain_graph=True, 
-                        allow_unused=False,  # Must be False - we require gradients to exist
+                        global_loss,
+                        proxy_param,
+                        retain_graph=False,   # <-- free graph after verification
+                        allow_unused=False,
                         create_graph=False
                     )[0]
-                    assert g is not None, f"[Attacker {self.client_id}] Direct gradient computation failed: g is None"
-                    g_norm = g.norm().item()
-                    assert g_norm > 1e-8, \
-                        f"[Attacker {self.client_id}] Direct gradient norm too small: {g_norm:.2e} (gradient link broken)"
-                    # Restore gradients from lagrangian_objective
-                    proxy_param.grad = None
-                    lagrangian_objective.backward()
-                    # Verify restored gradient matches expected (should be from lagrangian_objective)
-                    if proxy_param.grad is None:
-                        raise RuntimeError(f"Gradient not restored after direct check")
-                except Exception as grad_check_error:
-                    print(f"      [Attacker {self.client_id}] FATAL: Gradient verification failed: {grad_check_error}")
-                    raise RuntimeError(f"Gradient verification failed at step {step}") from grad_check_error
+                    if g is None or g.norm().item() < 1e-8:
+                        raise RuntimeError(
+                            f"[Attacker {self.client_id}] Gradient verification failed at step {step}: "
+                            f"g is None or too small."
+                        )
             # ===========================================================
             
             # Gradient clipping to prevent explosion
@@ -2331,16 +2395,22 @@ class AttackerClient(Client):
             # Modification 4: Add constraint safeguard mechanism within optimization loop (Lagrangian framework)
             # Under Lagrangian mechanism, add light projection as safeguard to prevent optimization path from deviating too far
             # ============================================================
+            # ============================================================
+            # CRITICAL: Projection must use no_grad() + in-place op, NOT .data
+            # ============================================================
             if not self.use_lagrangian_dual and self.d_T is not None:
                 # Hard constraint projection (original logic, behavior when not using Lagrangian)
                 dist_to_global = torch.norm(proxy_param).item()
                 if dist_to_global > self.d_T:
                     # Project to constraint set: scale down to satisfy d ≤ d_T
-                    proxy_param.data = proxy_param.data * (self.d_T / dist_to_global)
+                    # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
+                    scale_factor = self.d_T / dist_to_global
+                    with torch.no_grad():
+                        proxy_param.mul_(scale_factor)
             elif self.use_lagrangian_dual and self.d_T is not None:
                 # Modification 4: Constraint safeguard under Lagrangian mechanism
-                # Check within optimization loop, if violation exceeds 20%, immediately apply light projection to prevent path deviation
-                # This maintains Lagrangian flexibility while ensuring constraints are promptly safeguarded
+                # Check within optimization loop, if violation exceeds threshold, apply light projection
+                # This maintains Lagrangian flexibility while ensuring constraints are safeguarded
                 # Use real distance calculation according to paper Constraint (4b)
                 if self.enable_light_projection_in_loop:
                     dist_to_global_for_projection_tensor = self._compute_real_distance_to_global(
@@ -2356,7 +2426,9 @@ class AttackerClient(Client):
                         # Light projection to 1.5 × d_T, leaving margin to allow Lagrangian to continue optimizing
                         target_dist = self.d_T * 1.5
                         scale_factor = target_dist / dist_to_global_for_projection
-                        proxy_param.data = proxy_param.data * scale_factor
+                        # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
+                        with torch.no_grad():
+                            proxy_param.mul_(scale_factor)
         
         malicious_update = proxy_param.detach()
         
@@ -2423,21 +2495,19 @@ class AttackerClient(Client):
         else:
             # Hard constraint projection mechanism (original logic)
             if self.d_T is not None:
-                # Use real distance calculation according to paper Constraint (4b)
                 dist_to_global_tensor = self._compute_real_distance_to_global(
                     malicious_update,
                     selected_benign,
                     beta_selection
                 )
                 dist_to_global = dist_to_global_tensor.item()
-            
-            if dist_to_global > self.d_T:
-                # Hard constraint: project to satisfy d ≤ d_T
-                scale_factor = self.d_T / dist_to_global
-                malicious_update = malicious_update * scale_factor
-                final_norm = torch.norm(malicious_update).item()
-                print(f"    [Attacker {self.client_id}] Applied hard constraint projection: "
-                      f"scaled from {dist_to_global:.4f} to {final_norm:.4f}")
+
+                if dist_to_global > self.d_T:
+                    scale_factor = self.d_T / dist_to_global
+                    malicious_update = malicious_update * scale_factor
+                    final_norm = torch.norm(malicious_update).item()
+                    print(f"    [Attacker {self.client_id}] Applied hard constraint projection: "
+                          f"scaled from {dist_to_global:.4f} to {final_norm:.4f}")
         
         # Compute final attack objective value for logging
         # Use evaluation max_batches for more accurate final assessment
