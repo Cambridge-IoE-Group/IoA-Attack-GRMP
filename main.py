@@ -635,8 +635,8 @@ def main():
         # ========== Training Hyperparameters ==========
         'client_lr': 2e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
-        'batch_size': 32,  # Batch size for local training (int)
-        'test_batch_size': 128,  # Batch size for test/validation data loaders (int)
+        'batch_size': 16,  # Batch size for local training (int)
+        'test_batch_size': 64,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
@@ -697,11 +697,11 @@ def main():
         'rho_lr': 0.01,   # Learning rate for ρ(t) update (subgradient step size)
         
         # ========== Proxy Loss Estimation Parameters ==========
-        'proxy_sample_size': 128,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
+        'proxy_sample_size': 64,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
-        'proxy_max_batches_opt': 2,  # Max batches for proxy loss in optimization loop (int)
+        'proxy_max_batches_opt': 1,  # Max batches for proxy loss in optimization loop (int)
                                 # Used during gradient-based optimization (20 steps per round)
-        'proxy_max_batches_eval': 4,  # Max batches for proxy loss in final evaluation (int)
+        'proxy_max_batches_eval': 2,  # Max batches for proxy loss in final evaluation (int)
                                 # Used for final attack objective logging (1 call per round)
         
         # ========== Graph Construction Parameters ==========
