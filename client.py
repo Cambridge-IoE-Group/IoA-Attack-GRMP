@@ -624,7 +624,7 @@ class AttackerClient(Client):
         # return sorted(selected_indices)
         # =====================================================================
         # Since constraint (4c) is disabled, always return all indices
-        return self.benign_updates
+        return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
@@ -1676,6 +1676,11 @@ class AttackerClient(Client):
                 if idx < len(beta_selection) and len(self.benign_update_client_ids) > 0:
                     # beta_selection[idx] gives the original index in self.benign_updates
                     original_idx = beta_selection[idx]
+                    # CRITICAL: Ensure original_idx is a Python int, not a tensor
+                    if isinstance(original_idx, torch.Tensor):
+                        original_idx = int(original_idx.item())
+                    else:
+                        original_idx = int(original_idx)
                     if original_idx < len(self.benign_update_client_ids):
                         client_id = self.benign_update_client_ids[original_idx]
                         # Get exact data size D_i(t) for this client
@@ -1772,6 +1777,11 @@ class AttackerClient(Client):
                 if idx < len(beta_selection) and len(self.benign_update_client_ids) > 0:
                     # beta_selection[idx] gives the original index in self.benign_updates
                     original_idx = beta_selection[idx]
+                    # CRITICAL: Ensure original_idx is a Python int, not a tensor
+                    if isinstance(original_idx, torch.Tensor):
+                        original_idx = int(original_idx.item())
+                    else:
+                        original_idx = int(original_idx)
                     if original_idx < len(self.benign_update_client_ids):
                         client_id = self.benign_update_client_ids[original_idx]
                         # Get exact data size D_i(t) for this client
@@ -2106,6 +2116,20 @@ class AttackerClient(Client):
         # Get beta selection indices (which benign updates were selected)
         # Use helper method to avoid tensor comparison issues
         beta_selection = self._get_selected_benign_indices()
+        # CRITICAL: Ensure beta_selection is a list of Python ints, not tensors
+        if beta_selection is None:
+            beta_selection = []
+        elif isinstance(beta_selection, torch.Tensor):
+            beta_selection = beta_selection.tolist()
+        # Ensure all elements are Python ints, not tensor scalars or numpy types
+        beta_selection = [int(idx) if not isinstance(idx, int) else idx for idx in beta_selection]
+        # CRITICAL: Ensure beta_selection is a list, not a tensor
+        if isinstance(beta_selection, torch.Tensor):
+            beta_selection = beta_selection.tolist()
+        if beta_selection is None:
+            beta_selection = []
+        # Ensure all elements are Python ints, not tensor scalars
+        beta_selection = [int(idx) if isinstance(idx, (torch.Tensor, np.integer)) else int(idx) for idx in beta_selection]
         
         # ============================================================
         # STEP 7: Optimize w'_j(t) to maximize F(w'_g(t))
