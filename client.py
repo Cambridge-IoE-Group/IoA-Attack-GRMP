@@ -409,7 +409,8 @@ class AttackerClient(Client):
         # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_init_value check =====
         if self.use_lagrangian_dual and self.lambda_init_value is not None:  # Removed rho_init_value check
             # Adaptive λ initialization: if last round had large violation, use larger initial λ
-            if self.last_violation is not None and self.d_T is not None and self.last_violation > self.d_T * 1.5:
+            d_T_init = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
+            if self.last_violation is not None and d_T_init is not None and self.last_violation > d_T_init * 1.5:
                 # Estimate required λ based on violation magnitude and optimization steps
                 # Target: λ should be large enough to suppress violation in proxy_steps iterations
                 # Rough estimate: λ_needed ≈ violation / (lambda_lr * proxy_steps)
@@ -2238,11 +2239,12 @@ class AttackerClient(Client):
                     beta_selection
                 )
                 initial_dist = initial_dist_tensor.item()
-                initial_g = initial_dist - self.d_T
+                d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                initial_g = initial_dist - d_T_val
                 initial_lambda = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt if self.lambda_dt is not None else 0.0
                 initial_loss = self._compute_global_loss(proxy_param, selected_benign, beta_selection).item()
                 print(f"    [Attacker {self.client_id}] Starting optimization: "
-                      f"initial_dist={initial_dist:.4f}, d_T={self.d_T:.4f}, g={initial_g:.4f}, "
+                      f"initial_dist={initial_dist:.4f}, d_T={d_T_val:.4f}, g={initial_g:.4f}, "
                       f"lambda={initial_lambda:.4f}, loss={initial_loss:.4f}, steps={self.proxy_steps}")
             except Exception as e:
                 print(f"    [Attacker {self.client_id}] ERROR computing initial state: {e}")
@@ -2318,7 +2320,9 @@ class AttackerClient(Client):
                 #   rho = getattr(self, "lagrangian_rho", 10.0)
                 #   penalty = lambda * g + 0.5 * rho * (F.relu(g) ** 2)  # Uncomment if preferred
                 # ============================================================
-                g = dist_to_global_for_objective - self.d_T if self.d_T is not None else torch.tensor(0.0, device=self.device)
+                # CRITICAL: Convert d_T to scalar if it's a tensor
+                d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
+                g = dist_to_global_for_objective - d_T_val if d_T_val is not None else torch.tensor(0.0, device=self.device)
                 
                 # Standard Lagrangian Dual: penalty = λ * g
                 penalty = lambda_dt_tensor * g
@@ -2377,12 +2381,14 @@ class AttackerClient(Client):
                 
                 # Compute constraint violations (for logging only)
                 # Use real distance calculation according to paper Constraint (4b)
+                # CRITICAL: Convert d_T to scalar if it's a tensor
+                d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
                 dist_to_global = self._compute_real_distance_to_global(
                     proxy_param,
                     selected_benign,
                     beta_selection
-                ) if self.d_T is not None else torch.tensor(0.0, device=self.device)
-                constraint_b_violation = F.relu(dist_to_global - self.d_T) if self.d_T is not None else torch.tensor(0.0, device=self.device)
+                ) if d_T_val is not None else torch.tensor(0.0, device=self.device)
+                constraint_b_violation = F.relu(dist_to_global - d_T_val) if d_T_val is not None else torch.tensor(0.0, device=self.device)
                 
                 # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # OPTIMIZATION 6: Constraint (4c) calculation moved to after loop for hard constraint mode
@@ -2479,7 +2485,8 @@ class AttackerClient(Client):
                     # - If constraint is violated (g > 0): λ increases to penalize violation
                     # - If constraint is satisfied (g < 0): λ decreases (but clamped to ≥ 0)
                     #   This allows the system to "relax" when constraint is well-satisfied
-                    g_val = current_dist - self.d_T
+                    d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                    g_val = current_dist - d_T_val
                     new_lambda = lambda_val + self.lambda_lr * g_val
                     new_lambda = max(0.0, new_lambda)  # Ensure non-negative
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
@@ -2532,10 +2539,12 @@ class AttackerClient(Client):
                         beta_selection
                     )
                     dist = dist_tensor.item()
-                    if dist > self.d_T:
+                    d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                    if dist > d_T_val:
                     # Project to constraint set: scale down to satisfy d ≤ d_T
                         # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
-                        scale = self.d_T / (dist + 1e-12)  # Add small epsilon to avoid division by zero
+                        d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                        scale = d_T_val / (dist + 1e-12)  # Add small epsilon to avoid division by zero
                         proxy_param.mul_(scale)
                         
                         # Logging: Print projection information
@@ -2564,11 +2573,13 @@ class AttackerClient(Client):
                     )
                     dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
                     
-                    violation_ratio = (dist_to_global_for_projection - self.d_T) / self.d_T if self.d_T > 0 else 0.0
+                    d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                    violation_ratio = (dist_to_global_for_projection - d_T_val) / d_T_val if d_T_val > 0 else 0.0
                     
                     if violation_ratio > 1:
                         # Light projection to 1.5 × d_T, leaving margin to allow Lagrangian to continue optimizing
-                        target_dist = self.d_T * 1.5
+                        d_T_proj = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                        target_dist = d_T_proj * 1.5
                         scale_factor = target_dist / dist_to_global_for_projection
                         # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
                         with torch.no_grad():
@@ -2596,13 +2607,14 @@ class AttackerClient(Client):
                 beta_selection
             )
             final_dist = final_dist_tensor.item()
-            final_g = final_dist - self.d_T
+            d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+            final_g = final_dist - d_T_val
             final_lambda = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt if self.lambda_dt is not None else 0.0
             final_loss = self._compute_global_loss(proxy_param, selected_benign, beta_selection).item()
             final_violation = max(0, final_g)
-            violation_pct = (final_violation / self.d_T * 100) if self.d_T > 0 else 0.0
+            violation_pct = (final_violation / d_T_val * 100) if d_T_val > 0 else 0.0
             print(f"    [Attacker {self.client_id}] Optimization completed: "
-                  f"final_dist={final_dist:.4f}, d_T={self.d_T:.4f}, g={final_g:.4f}, "
+                  f"final_dist={final_dist:.4f}, d_T={d_T_val:.4f}, g={final_g:.4f}, "
                   f"lambda={final_lambda:.4f}, loss={final_loss:.4f}, "
                   f"violation={final_violation:.4f} ({violation_pct:.1f}%)")
         
@@ -2633,8 +2645,9 @@ class AttackerClient(Client):
                     beta_selection
                 )
                 dist_to_global = dist_to_global_tensor.item()
-                constraint_violation = max(0, dist_to_global - self.d_T)
-                violation_ratio = constraint_violation / self.d_T if self.d_T > 0 else 0.0
+                d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                constraint_violation = max(0, dist_to_global - d_T_val)
+                violation_ratio = constraint_violation / d_T_val if d_T_val > 0 else 0.0
                 
                 # Store violation for adaptive initialization in next round (Optimization)
                 self.last_violation = dist_to_global
@@ -2652,12 +2665,14 @@ class AttackerClient(Client):
                         if violation_ratio > 1.00:  # Severe violation (>100%)
                             # Strict projection to d_T, completely satisfy constraint
                             # Only applied when violation is extremely severe to preserve optimization stability
-                            scale_factor = self.d_T / dist_to_global
+                            d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                            scale_factor = d_T_val / dist_to_global
                             malicious_update = malicious_update * scale_factor
                             print(f"      Applied strict projection (violation >100%): scaled to d_T")
                         elif violation_ratio > 0.50:  # Moderate violation (50-100%)
                             # Mild projection to 1.1×d_T, allowing 10% margin for Lagrangian flexibility
-                            target_dist = self.d_T * 1.1
+                            d_T_proj_final = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+                            target_dist = d_T_proj_final * 1.1
                             scale_factor = target_dist / dist_to_global
                             malicious_update = malicious_update * scale_factor
                             print(f"      Applied mild projection (violation 50-100%): scaled to 1.1×d_T")
@@ -2678,8 +2693,9 @@ class AttackerClient(Client):
                 )
                 dist_to_global = dist_to_global_tensor.item()
             
-            if dist_to_global > self.d_T:
-                scale_factor = self.d_T / dist_to_global
+            d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+            if dist_to_global > d_T_val:
+                scale_factor = d_T_val / dist_to_global
                 malicious_update = malicious_update * scale_factor
                 final_norm = torch.norm(malicious_update).item()
                 print(f"    [Attacker {self.client_id}] Applied hard constraint projection: "
