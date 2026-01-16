@@ -403,6 +403,10 @@ class AttackerClient(Client):
         self.base_buffers = {}
         # ============================================================
 
+        # Store base d_T if adaptive d_T is enabled (needed for adaptive calculation)
+        if self.adaptive_d_T and self.base_d_T is None:
+            self.base_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else 10.0
+        
         # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
         # Reason: Prevent λ and ρ from accumulating across rounds, which causes numerical instability and optimization imbalance
         # Optimization: Use adaptive λ initialization based on previous round's violation to provide better starting point
@@ -1570,7 +1574,10 @@ class AttackerClient(Client):
                               # rho_lr: float = 0.01,
                               # ==========================================
                               enable_final_projection: bool = True,
-                              enable_light_projection_in_loop: bool = True):
+                              enable_light_projection_in_loop: bool = True,
+                              adaptive_d_T: bool = False,
+                              d_T_multiplier: float = 1.5,
+                              d_T_min: float = 8.0):
         """
         Set Lagrangian Dual parameters (initialized according to paper Algorithm 1)
         
@@ -1593,10 +1600,19 @@ class AttackerClient(Client):
                                    If False, completely relies on Lagrangian mechanism (no final projection)
             enable_light_projection_in_loop: Whether to apply light projection within optimization loop (only for Lagrangian mode)
                                            If False, no projection within optimization loop, only relies on Lagrangian mechanism
+            adaptive_d_T: Whether to use adaptive d_T based on benign client distances (default: False)
+            d_T_multiplier: Multiplier for adaptive d_T calculation (default: 1.5)
+            d_T_min: Minimum d_T value to prevent too small thresholds (default: 8.0)
         
         Modification 2: Save initial values for reset in prepare_for_round
         """
         self.use_lagrangian_dual = use_lagrangian_dual
+        # Store adaptive d_T parameters
+        self.adaptive_d_T = adaptive_d_T
+        self.d_T_multiplier = d_T_multiplier
+        self.d_T_min = d_T_min
+        # Store base d_T value (will be set by server, but we keep original for adaptive calculation)
+        self.base_d_T = None  # Will be set from self.d_T in prepare_for_round or camouflage_update
         if use_lagrangian_dual:
             # Paper: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
             # Modification 2: Save initial values for reset each round
@@ -2199,6 +2215,63 @@ class AttackerClient(Client):
         self._use_lora_in_optimization = use_lora
         # ===================================================================
         
+        # ============================================================
+        # Adaptive d_T calculation (if enabled)
+        # ============================================================
+        if self.adaptive_d_T and len(self.benign_updates) > 0:
+            # Compute distances of benign clients to their weighted average
+            # This gives us the "normal" distance range for benign clients
+            benign_distances = []
+            if len(self.benign_updates) >= 2:
+                # Compute weighted average of benign updates (excluding attacker)
+                device = target_device if hasattr(self, '_model_on_gpu') and self._model_on_gpu else self.device
+                benign_updates_gpu = [u.to(device) for u in self.benign_updates]
+                
+                # Compute weighted average of benign updates
+                if hasattr(self, 'benign_data_sizes') and len(self.benign_update_client_ids) == len(self.benign_updates):
+                    total_benign_D = sum(
+                        float(self.benign_data_sizes.get(cid, 1.0)) 
+                        for cid in self.benign_update_client_ids
+                    )
+                    benign_avg = torch.zeros_like(benign_updates_gpu[0])
+                    for idx, benign_update in enumerate(benign_updates_gpu):
+                        if idx < len(self.benign_update_client_ids):
+                            cid = self.benign_update_client_ids[idx]
+                            D_i = float(self.benign_data_sizes.get(cid, 1.0))
+                            weight = D_i / (total_benign_D + 1e-12)
+                            benign_avg += weight * benign_update
+                else:
+                    # Fallback to simple average
+                    benign_avg = torch.stack(benign_updates_gpu).mean(dim=0)
+                
+                # Compute distance of each benign update to the average
+                for benign_update in benign_updates_gpu:
+                    dist = torch.norm((benign_update - benign_avg).view(-1)).item()
+                    benign_distances.append(dist)
+                
+                if len(benign_distances) > 0:
+                    mean_benign_dist = sum(benign_distances) / len(benign_distances)
+                    # Store base_d_T if not already set
+                    if self.base_d_T is None:
+                        self.base_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else 10.0
+                    
+                    # Calculate adaptive d_T: max(base_d_T, mean_benign_dist * multiplier, d_T_min)
+                    adaptive_d_T_value = max(
+                        self.base_d_T,
+                        mean_benign_dist * self.d_T_multiplier,
+                        self.d_T_min
+                    )
+                    
+                    # Update d_T (preserve type: tensor or float)
+                    if isinstance(self.d_T, torch.Tensor):
+                        self.d_T = torch.tensor(adaptive_d_T_value, device=self.d_T.device, dtype=self.d_T.dtype)
+                    else:
+                        self.d_T = adaptive_d_T_value
+                    
+                    print(f"    [Attacker {self.client_id}] Adaptive d_T: base={self.base_d_T:.2f}, "
+                          f"mean_benign_dist={mean_benign_dist:.2f}, "
+                          f"adaptive_d_T={adaptive_d_T_value:.2f} (multiplier={self.d_T_multiplier})")
+        
         # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
         # Constraint (4c): DISABLED (commented out in code)
         constraint_c_value_for_update = 0.0  # Used for updating ρ
@@ -2319,31 +2392,37 @@ class AttackerClient(Client):
                 # Standard Lagrangian Dual formulation
                 # ============================================================
                 # Constraint: g(x) = d(w'_j, w'_g) - d_T ≤ 0
-                # Standard Lagrangian: L = f(x) - λ * g(x) = F(w'_g) - λ * (d - d_T)
-                # Converting to minimization: minimize -L = -F(w'_g) + λ * (d - d_T)
                 # 
-                # Behavior:
-                # - When dist < d_T (satisfied): g < 0, penalty = λ * g < 0 (rewards satisfaction)
-                # - When dist > d_T (violated):  g > 0, penalty = λ * g > 0 (penalizes violation)
+                # Hinge Penalty (Modified): penalty = λ * relu(g)
+                # - When dist < d_T (satisfied): g < 0, relu(g) = 0, penalty = 0 (no penalty/reward)
+                # - When dist > d_T (violated):  g > 0, relu(g) = g, penalty = λ * g > 0 (penalizes violation)
                 #
-                # Note: This is the standard Lagrangian dual formulation. The penalty term
-                # includes both positive (violation) and negative (satisfaction) contributions.
+                # Why Hinge Penalty instead of Standard Lagrangian:
+                # - Standard Lagrangian rewards satisfaction (negative penalty when dist < d_T),
+                #   which conflicts with the attack goal of maximizing loss
+                # - Hinge Penalty only penalizes violations, giving optimizer more freedom
+                #   when constraint is satisfied, allowing better attack effectiveness
                 #
-                # Alternative (Hinge Penalty - only penalize violations):
-                #   penalty = lambda * relu(g)  # Uncomment if preferred
-                # Alternative (Augmented Lagrangian):
+                # Alternative (Augmented Lagrangian - for stronger constraint enforcement):
                 #   rho = getattr(self, "lagrangian_rho", 10.0)
-                #   penalty = lambda * g + 0.5 * rho * (F.relu(g) ** 2)  # Uncomment if preferred
+                #   penalty = lambda * relu(g) + 0.5 * rho * (relu(g) ** 2)
                 # ============================================================
                 # CRITICAL: Convert d_T to scalar if it's a tensor
                 d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
                 g = dist_to_global_for_objective - d_T_val if d_T_val is not None else torch.tensor(0.0, device=self.device)
                 
-                # Standard Lagrangian Dual: penalty = λ * g
-                penalty = lambda_dt_tensor * g
+                # Hinge Penalty: only penalize violations, don't reward satisfaction
+                # This allows optimizer more freedom when constraint is satisfied
+                # Modified from standard Lagrangian to improve attack effectiveness
+                # penalty = λ * max(0, dist - d_T) = λ * relu(dist - d_T)
+                penalty = lambda_dt_tensor * F.relu(g)
                 
-                # Alternative Option A: Hinge Penalty (uncomment if preferred)
-                # penalty = lambda_dt_tensor * F.relu(g)
+                # Alternative Option A: Standard Lagrangian (uncomment if preferred)
+                # penalty = lambda_dt_tensor * g
+                
+                # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
+                # rho = getattr(self, "lagrangian_rho", 10.0)
+                # penalty = lambda_dt_tensor * F.relu(g) + 0.5 * rho * (F.relu(g) ** 2)
                 
                 # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
                 # rho = getattr(self, "lagrangian_rho", 10.0)

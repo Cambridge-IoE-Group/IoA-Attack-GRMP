@@ -65,6 +65,7 @@ class NewsClassifierModel(nn.Module):
             # Default target modules based on model family
             if lora_target_modules is None:
                 model_name_lower = model_name.lower()
+                
                 # DistilBERT uses these module names for attention layers
                 if "distilbert" in model_name_lower:
                     lora_target_modules = ["q_lin", "k_lin", "v_lin", "out_lin"]

@@ -240,7 +240,10 @@ def setup_experiment(config):
                     # rho_lr=config.get('rho_lr', 0.01),
                     # ==========================================
                     enable_final_projection=config.get('enable_final_projection', True),
-                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True)
+                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True),
+                    adaptive_d_T=config.get('adaptive_d_T', True),
+                    d_T_multiplier=config.get('d_T_multiplier', 1.5),
+                    d_T_min=config.get('d_T_min', 8.0)
                 )
                 final_proj_status = "enabled" if config.get('enable_final_projection', True) else "disabled"
                 light_proj_status = "enabled" if config.get('enable_light_projection_in_loop', True) else "disabled"
@@ -673,7 +676,10 @@ def main():
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
-        'd_T': 10.0,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T (increased from 5.0, benign avg ~6.3)
+        'd_T': 10.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
+        'adaptive_d_T': True,  # Whether to use adaptive d_T based on benign client distances (bool)
+        'd_T_multiplier': 1.5,  # Multiplier for adaptive d_T: d_T = max(base_d_T, mean(benign_distances) * multiplier) (float)
+        'd_T_min': 8.0,  # Minimum d_T value (prevents too small thresholds) (float)
         # ===== CONSTRAINT (4c) COMMENTED OUT =====
         # 'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         'gamma': None,  # Temporarily disabled (constraint 4c is commented out)
