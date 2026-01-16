@@ -656,8 +656,8 @@ def main():
         # ========== Data Distribution ==========
         'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        # 'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
         'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
@@ -676,7 +676,7 @@ def main():
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
-        'd_T': 1.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
+        'd_T': 2.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
         'adaptive_d_T': False,  # Whether to use adaptive d_T based on benign client distances (bool)
         'd_T_multiplier': 1.5,  # Multiplier for adaptive d_T: d_T = max(base_d_T, mean(benign_distances) * multiplier) (float)
         'd_T_min': 1.0,  # Minimum d_T value (prevents too small thresholds) (float)
@@ -692,28 +692,28 @@ def main():
             # - LoRA (r=16): ~0.5-1M parameters, dim_reduction_size will be auto-adjusted if > LoRA params
             # Auto-adjustment: If dim_reduction_size > actual LoRA params, it will be set to 80% of LoRA params
         'dim_reduction_size': 10000,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
-        'vgae_epochs': 10,  # Number of epochs for VGAE training (reference: 10)
+        'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 32,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
         'vgae_latent_dim': 16,  # VGAE latent space dimension (per paper: hidden2_dim=16)
         'vgae_dropout': 0.0,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 50,  # Number of optimization steps for attack objective (int)
-        'gsp_perturbation_scale': 0.05,  # Perturbation scale for GSP attack diversity (float)
+        'gsp_perturbation_scale': 0.03,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.02,  # Perturbation scale for optimization initialization (float)
-        'grad_clip_norm': 5.0,  # Gradient clipping norm for training stability (float)
+        'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
-        'enable_light_projection_in_loop': True,  # Whether to apply light projection within optimization loop (bool, True/False)
+        'enable_light_projection_in_loop': False,  # Whether to apply light projection within optimization loop (bool, True/False)
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
         
         # Lagrangian multiplier parameters
         'lambda_init': 1000,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
-        'lambda_lr': 1.0,    # Learning rate for λ(t) update (dual ascent step size)
+        'lambda_lr': 0.1,    # Learning rate for λ(t) update (dual ascent step size)
         
         # Constraint (4c) parameters - DISABLED
         # 'rho_init': 0.1,   # Initial ρ(t) value (constraint 4c commented out in code)
@@ -722,9 +722,9 @@ def main():
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
-        'proxy_max_batches_opt': 1,  # Max batches for proxy loss in optimization loop (int)
+        'proxy_max_batches_opt': 2,  # Max batches for proxy loss in optimization loop (int)
                                 # Used during gradient-based optimization (20 steps per round)
-        'proxy_max_batches_eval': 2,  # Max batches for proxy loss in final evaluation (int)
+        'proxy_max_batches_eval': 4,  # Max batches for proxy loss in final evaluation (int)
                                 # Used for final attack objective logging (1 call per round)
         
         # ========== Graph Construction Parameters ==========
