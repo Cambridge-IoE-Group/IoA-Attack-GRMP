@@ -623,7 +623,7 @@ class AttackerClient(Client):
         # return sorted(selected_indices)
         # =====================================================================
         # Since constraint (4c) is disabled, always return all indices
-        return list(range(len(self.benign_updates)))
+        return self.benign_updates
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
@@ -994,7 +994,7 @@ class AttackerClient(Client):
             if use_lora:
                 raise RuntimeError(msg)
             print(msg)
-            return torch.tensor(0.0, device=self.device)
+        return torch.tensor(0.0, device=self.device)
 
         # Move model to GPU temporarily for proxy loss calculation
         # Normalize device: always use 'cuda:0' for consistency
@@ -1620,7 +1620,7 @@ class AttackerClient(Client):
         if self.total_data_size is None or len(self.benign_data_sizes) == 0:
             # Fallback: use proxy loss only (old behavior)
             proxy_loss = self._proxy_global_loss(malicious_update, max_batches=self.proxy_max_batches_opt, skip_dim_check=False)
-            return proxy_loss
+        return proxy_loss
         
         # Paper Formula (3): Full calculation with weights
         total_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
@@ -1829,7 +1829,7 @@ class AttackerClient(Client):
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD failed: {e}, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+        return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Step 3: Compute GFT coefficient matrix
         # S = F · B where F ∈ R^{I×M}, B ∈ R^{M×M}
@@ -1847,7 +1847,7 @@ class AttackerClient(Client):
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD of recon failed: {e}, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+        return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Step 6: Generate reconstructed feature matrix
         # F̂ = S · B̂^T where S ∈ R^{I×M}, B̂ ∈ R^{M×M}
@@ -1864,7 +1864,7 @@ class AttackerClient(Client):
         if F_recon_rows == 0:
             # Empty feature matrix: return zeros
             print(f"    [Attacker {self.client_id}] F_recon is empty, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+        return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Select a vector from F̂ as the malicious update
         # Use client_id to select different vectors for different attackers (for diversity)
@@ -1936,7 +1936,7 @@ class AttackerClient(Client):
         """
         if not self.benign_updates:
             print(f"    [Attacker {self.client_id}] No benign updates, return zero update")
-            return poisoned_update  # poisoned_update is always zero (attackers don't train)
+        return poisoned_update  # poisoned_update is always zero (attackers don't train)
 
         # Reset feature indices for this session
         self.feature_indices = None
@@ -1947,7 +1947,7 @@ class AttackerClient(Client):
         selected_benign = self._select_benign_subset()
         if not selected_benign:
             print(f"    [Attacker {self.client_id}] No benign subset selected, return zero update")
-            return poisoned_update  # poisoned_update is always zero (attackers don't train)
+        return poisoned_update  # poisoned_update is always zero (attackers don't train)
 
         # Move selected updates to GPU for processing
         selected_benign_gpu = [u.to(self.device) for u in selected_benign]
@@ -2226,11 +2226,40 @@ class AttackerClient(Client):
                     selected_benign,
                     beta_selection
                 )
-                # Lagrangian method: For constraint g(x) ≤ 0, Lagrangian is L = f(x) - λ g(x)
-                # For constraint (4b): d(w'_j, w'_g) - d_T ≤ 0, so L = F(w'_g) - λ (d(w'_j, w'_g) - d_T)
-                # Converting to minimization: minimize -L = -F(w'_g) + λ (d(w'_j, w'_g) - d_T)
-                # Since λ d_T is constant, we use: minimize -F(w'_g) + λ d(w'_j, w'_g)
-                constraint_b_term = lambda_dt_tensor * dist_to_global_for_objective
+                
+                # ============================================================
+                # Standard Lagrangian Dual formulation
+                # ============================================================
+                # Constraint: g(x) = d(w'_j, w'_g) - d_T ≤ 0
+                # Standard Lagrangian: L = f(x) - λ * g(x) = F(w'_g) - λ * (d - d_T)
+                # Converting to minimization: minimize -L = -F(w'_g) + λ * (d - d_T)
+                # 
+                # Behavior:
+                # - When dist < d_T (satisfied): g < 0, penalty = λ * g < 0 (rewards satisfaction)
+                # - When dist > d_T (violated):  g > 0, penalty = λ * g > 0 (penalizes violation)
+                #
+                # Note: This is the standard Lagrangian dual formulation. The penalty term
+                # includes both positive (violation) and negative (satisfaction) contributions.
+                #
+                # Alternative (Hinge Penalty - only penalize violations):
+                #   penalty = lambda * relu(g)  # Uncomment if preferred
+                # Alternative (Augmented Lagrangian):
+                #   rho = getattr(self, "lagrangian_rho", 10.0)
+                #   penalty = lambda * g + 0.5 * rho * (F.relu(g) ** 2)  # Uncomment if preferred
+                # ============================================================
+                g = dist_to_global_for_objective - self.d_T if self.d_T is not None else torch.tensor(0.0, device=self.device)
+                
+                # Standard Lagrangian Dual: penalty = λ * g
+                penalty = lambda_dt_tensor * g
+                
+                # Alternative Option A: Hinge Penalty (uncomment if preferred)
+                # penalty = lambda_dt_tensor * F.relu(g)
+                
+                # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
+                # rho = getattr(self, "lagrangian_rho", 10.0)
+                # penalty = lambda_dt_tensor * g + 0.5 * rho * (F.relu(g) ** 2)
+                
+                constraint_b_term = penalty
                 
                 # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
@@ -2249,16 +2278,19 @@ class AttackerClient(Client):
                 # Build Lagrangian objective function (paper formula eq:wprime_sub)
                 # ============================================================
                 # Paper: maximize F(w'_g(t)) subject to constraints
-                # Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)  [ρ term removed]
-                # Converting to minimization: minimize -L = -F(w'_g) + λ d(w'_j, w'_g) + ρ Σ(...)  [ρ term removed]
-                # (constant terms λ d_T and ρ Γ are omitted as they don't affect optimization direction)
+                # Standard Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)  [ρ term removed]
+                # Converting to minimization: minimize -L = -F(w'_g) + λ (d(w'_j, w'_g) - d_T) + ρ Σ(...)  [ρ term removed]
+                # Standard form: minimize -F(w'_g) + λ * (dist - d_T)
+                # When dist < d_T: penalty is negative (rewards satisfaction)
+                # When dist > d_T: penalty is positive (penalizes violation)
                 lagrangian_objective = -global_loss + constraint_b_term  # Removed constraint_c_term
                 
                 # ============================================================
                 # ============================================================
                 # Compute constraint violations (for updating λ and ρ)
                 # ============================================================
-                constraint_b_violation = F.relu(dist_to_global_for_objective - self.d_T) if self.d_T is not None else torch.tensor(0.0, device=self.device)
+                # g is already computed above (dist - d_T)
+                constraint_b_violation = F.relu(g) if self.d_T is not None else torch.tensor(0.0, device=self.device)
             
                 # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # constraint_c_violation = torch.tensor(0.0, device=self.device)
@@ -2371,13 +2403,20 @@ class AttackerClient(Client):
                     )
                     current_dist = current_dist_tensor.item()
                     lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
-                    # Subgradient: d(w'_j, w'_g) - d_T
-                    # If constraint is violated (d(...) > d_T), subgradient > 0, λ increases
-                    subgradient_b = current_dist - self.d_T
-                    new_lambda = lambda_val + self.lambda_lr * subgradient_b
+                    # Standard dual ascent update: λ(t+1) = max(0, λ(t) + α_λ * g)
+                    # where g = dist - d_T is the constraint violation
+                    # - If constraint is violated (g > 0): λ increases to penalize violation
+                    # - If constraint is satisfied (g < 0): λ decreases (but clamped to ≥ 0)
+                    #   This allows the system to "relax" when constraint is well-satisfied
+                    g_val = current_dist - self.d_T
+                    new_lambda = lambda_val + self.lambda_lr * g_val
                     new_lambda = max(0.0, new_lambda)  # Ensure non-negative
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
                     self.lambda_dt = torch.tensor(new_lambda, device=target_device, requires_grad=False)
+                
+                    # Logging for debugging (optional, can be removed or made conditional)
+                    if step % 10 == 0 or step == 0:
+                        print(f"      [Attacker {self.client_id}] Step {step}: dist={current_dist:.4f}, g={g_val:.4f}, lambda={lambda_val:.4f}, loss={global_loss.item():.4f}")
                 
                 # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # if self.gamma is not None and len(selected_benign) > 0:
@@ -2399,19 +2438,47 @@ class AttackerClient(Client):
             # CRITICAL: Projection must use no_grad() + in-place op, NOT .data
             # ============================================================
             if not self.use_lagrangian_dual and self.d_T is not None:
-                # Hard constraint projection (original logic, behavior when not using Lagrangian)
-                dist_to_global = torch.norm(proxy_param).item()
-                if dist_to_global > self.d_T:
-                    # Project to constraint set: scale down to satisfy d ≤ d_T
-                    # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
-                    scale_factor = self.d_T / dist_to_global
-                    with torch.no_grad():
-                        proxy_param.mul_(scale_factor)
+                # ============================================================
+                # CRITICAL FIX: Hard constraint projection using REAL distance
+                # ============================================================
+                # Original issue: Used ||proxy_param|| instead of d(w'_j, w'_g)
+                # This is incorrect because the constraint is on the distance to global,
+                # not on the norm of the update itself.
+                #
+                # Fix: Use _compute_real_distance_to_global() to get true distance,
+                # then project proxy_param to satisfy d(w'_j, w'_g) ≤ d_T
+                # ============================================================
+                # Hard constraint mode: enforce constraint every step using TRUE distance
+                with torch.no_grad():
+                    dist_tensor = self._compute_real_distance_to_global(
+                        proxy_param,
+                        selected_benign,
+                        beta_selection
+                    )
+                    dist = dist_tensor.item()
+                    if dist > self.d_T:
+                        # Project to constraint set: scale down to satisfy d ≤ d_T
+                        # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
+                        scale = self.d_T / (dist + 1e-12)  # Add small epsilon to avoid division by zero
+                        proxy_param.mul_(scale)
+                        
+                        # Logging for debugging (optional, can be removed or made conditional)
+                        if step % 10 == 0 or step == 0:
+                            new_dist = self._compute_real_distance_to_global(
+                                proxy_param,
+                                selected_benign,
+                                beta_selection
+                            ).item()
+                            print(f"      [Attacker {self.client_id}] Step {step}: Hard projection applied: "
+                                  f"dist {dist:.4f} -> {new_dist:.4f} (target: {self.d_T:.4f})")
             elif self.use_lagrangian_dual and self.d_T is not None:
-                # Modification 4: Constraint safeguard under Lagrangian mechanism
-                # Check within optimization loop, if violation exceeds threshold, apply light projection
-                # This maintains Lagrangian flexibility while ensuring constraints are safeguarded
-                # Use real distance calculation according to paper Constraint (4b)
+                # ============================================================
+                # Optional: Light projection safeguard (can be softened/removed with hinge penalty)
+                # ============================================================
+                # Note: With hinge penalty (only penalizes violations), light projection
+                # may be less necessary as the objective already handles violations correctly.
+                # Consider removing or softening this projection after verifying standard Lagrangian behavior.
+                # ============================================================
                 if self.enable_light_projection_in_loop:
                     dist_to_global_for_projection_tensor = self._compute_real_distance_to_global(
                         proxy_param,
@@ -2501,13 +2568,13 @@ class AttackerClient(Client):
                     beta_selection
                 )
                 dist_to_global = dist_to_global_tensor.item()
-
-                if dist_to_global > self.d_T:
-                    scale_factor = self.d_T / dist_to_global
-                    malicious_update = malicious_update * scale_factor
-                    final_norm = torch.norm(malicious_update).item()
-                    print(f"    [Attacker {self.client_id}] Applied hard constraint projection: "
-                          f"scaled from {dist_to_global:.4f} to {final_norm:.4f}")
+            
+            if dist_to_global > self.d_T:
+                scale_factor = self.d_T / dist_to_global
+                malicious_update = malicious_update * scale_factor
+                final_norm = torch.norm(malicious_update).item()
+                print(f"    [Attacker {self.client_id}] Applied hard constraint projection: "
+                      f"scaled from {dist_to_global:.4f} to {final_norm:.4f}")
         
         # Compute final attack objective value for logging
         # Use evaluation max_batches for more accurate final assessment
