@@ -657,7 +657,7 @@ def main():
         # 'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
-        'use_lora': Flase,  # True for LoRA fine-tuning, False for full fine-tuning
+        'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
         # LoRA parameters (only used when use_lora=True)
         # NOTE: Lower r values = faster training but potentially less capacity
         # Recommended: r=8 for speed, r=16 for better performance (default)
@@ -704,16 +704,14 @@ def main():
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
         'enable_light_projection_in_loop': False,  # Whether to apply light projection within optimization loop (bool, True/False)
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
-        'lambda_init': 100,  # Initial λ(t) value (λ(1)≥0, per paper Algorithm 1)
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # 'rho_init': 0.1,     # Initial ρ(t) value (ρ(1)≥0, per paper Algorithm 1)
-        'rho_init': 0.1,     # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
-        'lambda_lr': 0.1,  # Learning rate for λ(t) update (subgradient step size)
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # 'rho_lr': 0.1,   # Learning rate for ρ(t) update (subgradient step size)
-        'rho_lr': 0.1,   # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
+        
+        # Lagrangian multiplier parameters
+        'lambda_init': 100,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
+        'lambda_lr': 0.1,    # Learning rate for λ(t) update (dual ascent step size)
+        
+        # Constraint (4c) parameters - DISABLED
+        # 'rho_init': 0.1,   # Initial ρ(t) value (constraint 4c commented out in code)
+        # 'rho_lr': 0.1,     # Learning rate for ρ(t) update (constraint 4c commented out in code)
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
