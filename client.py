@@ -2200,13 +2200,12 @@ class AttackerClient(Client):
         # ===================================================================
         
         # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
-        # Constraint (4c): Σ β'_{i,j}(t)^* d(w_i(t), w̄_i(t)) is a constant during optimization
-        # because selected_benign does not change during the loop
+        # Constraint (4c): DISABLED (commented out in code)
         constraint_c_value_for_update = 0.0  # Used for updating ρ
         constraint_c_term_base = None  # Cached base term for Lagrangian mode (on GPU)
         
         # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # if self.gamma is not None and len(selected_benign) > 0:
+        # if self.gamma is not None and len(self.benign_updates) > 0:
         #     # Compute constraint (4c) value once before loop (constant value)
         #     # Paper constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         #     # where w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) is the weighted mean of ALL benign clients
@@ -2385,7 +2384,7 @@ class AttackerClient(Client):
             
                 # ===== CONSTRAINT (4c) COMMENTED OUT =====
                 # constraint_c_violation = torch.tensor(0.0, device=self.device)
-                # if self.gamma is not None and len(selected_benign) > 0:
+                # if self.gamma is not None and len(self.benign_updates) > 0:
                 #         constraint_c_violation = F.relu(torch.tensor(constraint_c_value_for_update, device=self.device) - self.gamma)
                 constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
                 # ==========================================
@@ -2521,7 +2520,7 @@ class AttackerClient(Client):
                         f"loss={global_loss.item():.4f}, grad_norm={grad_norm:.4f}")
                 
                     # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                    # if self.gamma is not None and len(selected_benign) > 0:
+                    # if self.gamma is not None and len(self.benign_updates) > 0:
                 #     rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
                 #     # Subgradient: Σ(...) - Γ
                 #     # If constraint is violated (Σ(...) > Γ), subgradient > 0, ρ increases
@@ -2645,11 +2644,10 @@ class AttackerClient(Client):
             # Final constraint check: Graded projection strategy (within Lagrangian framework)
             # Use different strategies based on violation degree to balance flexibility and constraint satisfaction
             if self.d_T is not None:
-                # Use real distance calculation according to paper Constraint (4b)
-                dist_to_global_tensor = self._compute_real_distance_to_global(
+                # Use UPDATE space distance calculation
+                dist_to_global_tensor, _ = self._compute_distance_update_space(
                     malicious_update,
-                    selected_benign,
-                    beta_selection
+                    self.benign_updates
                 )
                 dist_to_global = dist_to_global_tensor.item()
                 d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
@@ -2721,7 +2719,7 @@ class AttackerClient(Client):
             # Use the same calculation as in Lagrangian mode for consistency
             constraint_c_value = torch.tensor(0.0, device=self.device)
             # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # if self.gamma is not None and len(selected_benign) > 0:
+            # if self.gamma is not None and len(self.benign_updates) > 0:
             if False:  # Temporarily disabled (constraint 4c is commented out, gamma is None)
                 # ===== CONSTRAINT (4c) COMMENTED OUT: All computation below is disabled =====
                 # Compute constraint (4c) value using weighted mean of ALL benign clients
@@ -2741,21 +2739,21 @@ class AttackerClient(Client):
                             weight = 1.0 / len(self.benign_updates)
                         weighted_mean = weighted_mean + weight * benign_update.to(self.device)
                     
-                    # Compute distances d(w_i(t), w̄_i(t)) for selected benign clients
-                    sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-                    distances = [torch.norm(benign_update - weighted_mean) for benign_update in sel_benign_gpu]
+                    # Compute distances d(w_i(t), w̄_i(t)) for all benign clients
+                    benign_gpu = [u.to(self.device) for u in self.benign_updates]
+                    distances = [torch.norm(benign_update - weighted_mean) for benign_update in benign_gpu]
                     constraint_c_value = torch.stack(distances).sum()
                     # Clean up GPU references
-                    del benign_updates_gpu, benign_stack, weighted_mean, sel_benign_gpu, distances
+                    del benign_updates_gpu, benign_stack, weighted_mean, benign_gpu, distances
                 else:
                     # Fallback: use simple mean if data sizes not available
-                    sel_benign_gpu = [u.to(self.device) for u in selected_benign]
-                    sel_stack = torch.stack(sel_benign_gpu)
-                    sel_mean = sel_stack.mean(dim=0)
-                    distances = torch.norm(sel_stack - sel_mean, dim=1)
+                    benign_gpu = [u.to(self.device) for u in self.benign_updates]
+                    benign_stack_c = torch.stack(benign_gpu)
+                    benign_mean_c = benign_stack_c.mean(dim=0)
+                    distances = torch.norm(benign_stack_c - benign_mean_c, dim=1)
                     constraint_c_value = distances.sum()
                     # Clean up GPU references
-                    del sel_benign_gpu, sel_stack, sel_mean, distances
+                    del benign_gpu, benign_stack_c, benign_mean_c, distances
                 torch.cuda.empty_cache()
                 # ==========================================
         
