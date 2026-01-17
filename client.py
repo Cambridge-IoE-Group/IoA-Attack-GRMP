@@ -579,7 +579,7 @@ class AttackerClient(Client):
         # return selected
         # ====================================================================
         # Since constraint (4c) is disabled, always return all benign updates
-            return self.benign_updates
+        return self.benign_updates
     
     def _get_selected_benign_indices(self) -> List[int]:
         """
@@ -656,7 +656,7 @@ class AttackerClient(Client):
         # return sorted(selected_indices)
         # =====================================================================
         # Since constraint (4c) is disabled, always return all indices
-            return list(range(len(self.benign_updates)))
+        return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
