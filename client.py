@@ -310,6 +310,11 @@ class AttackerClient(Client):
         self.benign_update_client_ids = []  # Track client_id for each benign update to enable weighted average calculation
         self.feature_indices = None
         
+        # Other attackers' updates (for coordinated optimization)
+        self.other_attacker_updates = []
+        self.other_attacker_client_ids = []
+        self.other_attacker_data_sizes = {}  # {client_id: claimed_data_size}
+        
         # Data-agnostic attack: no local data usage
         self.original_business_loader = None
         self.proxy_loader = data_manager.get_proxy_eval_loader(sample_size=self.proxy_sample_size)
@@ -452,6 +457,27 @@ class AttackerClient(Client):
             # Fallback: use indices as client IDs (for backward compatibility)
             # Note: This may not be accurate, but allows code to work without server changes
             self.benign_update_client_ids = list(range(len(updates)))
+    
+    def receive_attacker_updates(self, updates: List[torch.Tensor], client_ids: List[int], data_sizes: Dict[int, float] = None):
+        """
+        Receive updates from other attackers that have already completed optimization.
+        These will be used in distance calculation to match Phase 4's reference point.
+        
+        Args:
+            updates: List of attacker update tensors (already optimized)
+            client_ids: List of attacker client IDs
+            data_sizes: Dictionary mapping client_id to claimed_data_size (optional)
+        """
+        # Store detached copies on CPU to save GPU memory
+        self.other_attacker_updates = [u.detach().clone().cpu() for u in updates]
+        self.other_attacker_client_ids = client_ids.copy() if client_ids else []
+        
+        # Store data sizes for weighted aggregation
+        if data_sizes is not None:
+            self.other_attacker_data_sizes = data_sizes.copy()
+        else:
+            # Fallback: use current attacker's claimed size as estimate
+            self.other_attacker_data_sizes = {cid: float(self.claimed_data_size) for cid in client_ids}
 
     def _select_benign_subset(self) -> List[torch.Tensor]:
         """
@@ -1683,15 +1709,42 @@ class AttackerClient(Client):
             D_list.append(D_i)
             D_sum += D_i
         
+        # ===== NEW: Include other attackers' updates for coordinated optimization =====
+        other_attacker_weights = []
+        other_attacker_updates_list = []
+        if hasattr(self, 'other_attacker_updates') and self.other_attacker_updates:
+            for idx, cid in enumerate(self.other_attacker_client_ids):
+                if idx < len(self.other_attacker_updates):
+                    if hasattr(self, 'other_attacker_data_sizes') and cid in self.other_attacker_data_sizes:
+                        D_j = float(self.other_attacker_data_sizes[cid])
+                    else:
+                        # Fallback: use current attacker's claimed size as estimate
+                        D_j = float(self.claimed_data_size)
+                    
+                    other_attacker_weights.append(D_j)
+                    other_attacker_updates_list.append(self.other_attacker_updates[idx])
+                    D_sum += D_j
+        # ==============================================================================
+        
         # Compute weights
         denom = D_sum + 1e-12
         w_att = D_att / denom
         w_ben = [D_i / denom for D_i in D_list]
+        w_other_att = [D_j / denom for D_j in other_attacker_weights]
         
-        # Aggregate updates: Δ_g = Σ w_i * Δ_i + w_att * Δ_att
+        # Aggregate updates: Δ_g = Σ w_i * Δ_i + Σ w_j * Δ_j + w_att * Δ_att
         agg = torch.zeros_like(malicious_update, device=device).view(-1)
+        
+        # Add benign updates
         for w, benign_update in zip(w_ben, benign_updates):
             agg = agg + w * benign_update.to(device).view(-1)
+        
+        # ===== NEW: Add other attackers' updates =====
+        for w, other_attacker_update in zip(w_other_att, other_attacker_updates_list):
+            agg = agg + w * other_attacker_update.to(device).view(-1)
+        # ==============================================
+        
+        # Add current attacker's update
         agg = agg + w_att * malicious_update.view(-1)
         
         return agg.view(-1), w_att, w_ben

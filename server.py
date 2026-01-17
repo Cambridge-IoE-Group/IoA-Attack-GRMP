@@ -583,13 +583,35 @@ class Server:
         
         print(f"  Captured {len(benign_updates)} benign updates for camouflage.")
         
+        # ===== NEW: Store completed attacker updates for coordinated optimization =====
+        completed_attacker_updates = {}  # {client_id: update_tensor}
+        completed_attacker_client_ids = []  # Keep order
+        completed_attacker_data_sizes = {}  # {client_id: claimed_data_size}
+        # ==============================================================================
+        
         final_updates = {}
         for client_id, update in initial_updates.items():
             client = self.clients[client_id]
             if getattr(client, 'is_attacker', False):
                 print(f"  ⚠️ Triggering camouflage logic for Client {client_id}")
                 client.receive_benign_updates(benign_updates, client_ids=benign_client_ids)
+                
+                # ===== NEW: Pass completed attacker updates to current attacker =====
+                if completed_attacker_updates:
+                    client.receive_attacker_updates(
+                        updates=list(completed_attacker_updates.values()),
+                        client_ids=completed_attacker_client_ids,
+                        data_sizes=completed_attacker_data_sizes
+                    )
+                # ====================================================================
+                
                 final_updates[client_id] = client.camouflage_update(update)
+                
+                # ===== NEW: Store current attacker's update for subsequent attackers =====
+                completed_attacker_updates[client_id] = final_updates[client_id]
+                completed_attacker_client_ids.append(client_id)
+                completed_attacker_data_sizes[client_id] = float(getattr(client, 'claimed_data_size', 1.0))
+                # =========================================================================
             else:
                 final_updates[client_id] = update
 

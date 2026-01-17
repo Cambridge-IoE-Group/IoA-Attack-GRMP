@@ -676,7 +676,7 @@ def main():
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== Formula 4 Constraint Parameters ==========
-        'd_T': 2.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
+        'd_T': 1.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
         'adaptive_d_T': False,  # Whether to use adaptive d_T based on benign client distances (bool)
         'd_T_multiplier': 1.5,  # Multiplier for adaptive d_T: d_T = max(base_d_T, mean(benign_distances) * multiplier) (float)
         'd_T_min': 1.0,  # Minimum d_T value (prevents too small thresholds) (float)
@@ -700,7 +700,7 @@ def main():
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 50,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
@@ -712,7 +712,7 @@ def main():
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
         
         # Lagrangian multiplier parameters
-        'lambda_init': 10000,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
+        'lambda_init': 1000,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
         'lambda_lr': 1.0,    # Learning rate for λ(t) update (dual ascent step size)
         
         # Constraint (4c) parameters - DISABLED
