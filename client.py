@@ -2446,36 +2446,32 @@ class AttackerClient(Client):
                 # ============================================================
                 # Constraint: g(x) = d(w'_j, w'_g) - d_T ≤ 0
                 # 
-                # Hinge Penalty (Modified): penalty = λ * relu(g)
-                # - When dist < d_T (satisfied): g < 0, relu(g) = 0, penalty = 0 (no penalty/reward)
-                # - When dist > d_T (violated):  g > 0, relu(g) = g, penalty = λ * g > 0 (penalizes violation)
+                # Standard Lagrangian: penalty = λ * g
+                # - When dist < d_T (satisfied): g < 0, penalty < 0 (negative, "rewards" satisfaction)
+                # - When dist > d_T (violated):  g > 0, penalty > 0 (positive, penalizes violation)
                 #
-                # Why Hinge Penalty instead of Standard Lagrangian:
-                # - Standard Lagrangian rewards satisfaction (negative penalty when dist < d_T),
-                #   which conflicts with the attack goal of maximizing loss
-                # - Hinge Penalty only penalizes violations, giving optimizer more freedom
-                #   when constraint is satisfied, allowing better attack effectiveness
+                # Why Standard Lagrangian:
+                # - Provides directional guidance even when constraint is satisfied (g < 0)
+                # - Negative penalty (reward) when satisfied helps prevent deviation from constraint boundary
+                # - Prevents optimization from moving too far from constraint when constraint is satisfied
                 #
-                # Alternative (Augmented Lagrangian - for stronger constraint enforcement):
+                # Alternative Option: Hinge Penalty (penalty = λ * relu(g))
+                #   - When satisfied: penalty = 0 (no constraint), may allow deviation
+                #   - When violated: penalty = λ * g > 0 (penalizes violation)
+                #
+                # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
                 #   rho = getattr(self, "lagrangian_rho", 10.0)
-                #   penalty = lambda * relu(g) + 0.5 * rho * (relu(g) ** 2)
+                #   penalty = lambda_dt_tensor * g + 0.5 * rho * (F.relu(g) ** 2)
                 # ============================================================
                 # CRITICAL: Convert d_T to scalar if it's a tensor
                 d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
                 g = dist_to_global_for_objective - d_T_val if d_T_val is not None else torch.tensor(0.0, device=self.device)
                 
-                # Hinge Penalty: only penalize violations, don't reward satisfaction
-                # This allows optimizer more freedom when constraint is satisfied
-                # Modified from standard Lagrangian to improve attack effectiveness
-                # penalty = λ * max(0, dist - d_T) = λ * relu(dist - d_T)
-                penalty = lambda_dt_tensor * F.relu(g)
-                
-                # Alternative Option A: Standard Lagrangian (uncomment if preferred)
-                # penalty = lambda_dt_tensor * g
-                
-                # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
-                # rho = getattr(self, "lagrangian_rho", 10.0)
-                # penalty = lambda_dt_tensor * F.relu(g) + 0.5 * rho * (F.relu(g) ** 2)
+                # Standard Lagrangian: provides directional guidance even when constraint is satisfied
+                # penalty = λ * (dist - d_T)
+                # When dist < d_T: penalty < 0 (reward, prevents deviation)
+                # When dist > d_T: penalty > 0 (penalty, enforces constraint)
+                penalty = lambda_dt_tensor * g
                 
                 # Alternative Option B: Augmented Lagrangian (uncomment if preferred)
                 # rho = getattr(self, "lagrangian_rho", 10.0)
