@@ -225,7 +225,9 @@ def setup_experiment(config):
                 gsp_perturbation_scale=config['gsp_perturbation_scale'],
                 opt_init_perturbation_scale=config['opt_init_perturbation_scale'],
                 grad_clip_norm=config['grad_clip_norm'],
-                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3)
+                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3),
+                use_distance_prediction=config.get('use_distance_prediction', True),
+                distance_prediction_alpha=config.get('distance_prediction_alpha', 0.3)
             )
             
             # Set Lagrangian Dual parameters (if using)
@@ -241,10 +243,7 @@ def setup_experiment(config):
                     # rho_lr=config.get('rho_lr', 0.01),
                     # ==========================================
                     enable_final_projection=config.get('enable_final_projection', True),
-                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True),
-                    adaptive_d_T=config.get('adaptive_d_T', True),
-                    d_T_multiplier=config.get('d_T_multiplier', 1.5),
-                    d_T_min=config.get('d_T_min', 8.0)
+                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True)
                 )
                 final_proj_status = "enabled" if config.get('enable_final_projection', True) else "disabled"
                 light_proj_status = "enabled" if config.get('enable_light_projection_in_loop', True) else "disabled"
@@ -639,8 +638,8 @@ def main():
         'seed': 42,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
-        'num_clients': 10,  # Total number of federated learning clients (int)
-        'num_attackers': 3,  # Number of attacker clients (int, must be < num_clients)
+        'num_clients': 7,  # Total number of federated learning clients (int)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -678,9 +677,6 @@ def main():
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 2.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        'adaptive_d_T': False,  # Whether to use adaptive d_T based on benign client distances (bool)
-        'd_T_multiplier': 1.5,  # Multiplier for adaptive d_T: d_T = max(base_d_T, mean(benign_distances) * multiplier) (float)
-        'd_T_min': 1.0,  # Minimum d_T value (prevents too small thresholds) (float)
         # ===== CONSTRAINT (4c) COMMENTED OUT =====
         # 'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
         'gamma': None,  # Temporarily disabled (constraint 4c is commented out)
@@ -701,12 +697,15 @@ def main():
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 150,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
+        'use_distance_prediction': True,  # Whether attackers learn benign distance trend and use it for dynamic d_T (bool)
+        'distance_prediction_alpha': 0.3,  # EMA decay factor for distance prediction (float, 0.0-1.0)
+                                         # Lower alpha = more weight on recent distances, higher alpha = more weight on history
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)

@@ -247,7 +247,9 @@ class AttackerClient(Client):
                  gsp_perturbation_scale=0.01,
                  opt_init_perturbation_scale=0.001,
                  grad_clip_norm=1.0,
-                 early_stop_constraint_stability_steps=3):
+                 early_stop_constraint_stability_steps=3,
+                 use_distance_prediction=True,
+                 distance_prediction_alpha=0.3):
         """
         Initialize an attacker client with VGAE-based camouflage capabilities.
         
@@ -300,6 +302,12 @@ class AttackerClient(Client):
         self.opt_init_perturbation_scale = opt_init_perturbation_scale
         self.grad_clip_norm = grad_clip_norm
         self.early_stop_constraint_stability_steps = early_stop_constraint_stability_steps
+        
+        # ===== NEW: Track benign client distance history for learning distance trend =====
+        self.benign_distance_history = []  # Store historical benign client distances
+        self.use_distance_prediction = use_distance_prediction  # Whether to use distance prediction for dynamic d_T
+        self.distance_prediction_alpha = distance_prediction_alpha  # EMA decay factor for distance prediction
+        # ================================================================================
 
         dummy_loader = data_manager.get_empty_loader()
         super().__init__(client_id, model, dummy_loader, lr, local_epochs, alpha)
@@ -410,9 +418,7 @@ class AttackerClient(Client):
         self.base_buffers = {}
         # ============================================================
 
-        # Store base d_T if adaptive d_T is enabled (needed for adaptive calculation)
-        if self.adaptive_d_T and self.base_d_T is None:
-            self.base_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else 10.0
+        # Note: d_T is used only as fallback when distance prediction is disabled or no history
 
         # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
         # Reason: Prevent λ and ρ from accumulating across rounds, which causes numerical instability and optimization imbalance
@@ -459,6 +465,88 @@ class AttackerClient(Client):
             # Fallback: use indices as client IDs (for backward compatibility)
             # Note: This may not be accurate, but allows code to work without server changes
             self.benign_update_client_ids = list(range(len(updates)))
+    
+    def receive_benign_distances(self, benign_distances: List[float]):
+        """
+        Receive benign client distances from server (for learning distance trend).
+        
+        This allows attackers to track and learn the distance decreasing pattern
+        of benign clients, enabling dynamic adaptation of d_T.
+        
+        Args:
+            benign_distances: List of benign client distances from current round
+        """
+        if benign_distances:
+            mean_benign_dist = sum(benign_distances) / len(benign_distances)
+            self.benign_distance_history.append(mean_benign_dist)
+            # Keep only recent history (last 50 rounds) to avoid memory issues
+            if len(self.benign_distance_history) > 50:
+                self.benign_distance_history = self.benign_distance_history[-50:]
+    
+    def predict_benign_distance(self) -> float:
+        """
+        Predict next round's benign client distance using Exponential Moving Average (EMA).
+        
+        This helps attackers anticipate the distance trend and adapt accordingly.
+        
+        Returns:
+            Predicted benign client distance for next round
+        """
+        if len(self.benign_distance_history) == 0:
+            # No history: return self.d_T (configured value) or reasonable default
+            if self.d_T is not None:
+                return float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+            else:
+                # Final fallback: use a reasonable default (should not reach here in normal operation)
+                # This is a safety fallback only
+                return 2.0
+        
+        if len(self.benign_distance_history) == 1:
+            # Only one value: return it
+            return self.benign_distance_history[0]
+        
+        # Exponential Moving Average (EMA)
+        alpha = self.distance_prediction_alpha
+        predicted = self.benign_distance_history[0]
+        for dist in self.benign_distance_history[1:]:
+            predicted = alpha * dist + (1 - alpha) * predicted
+        
+        return predicted
+    
+    def get_dynamic_d_T(self) -> float:
+        """
+        Get dynamic d_T based on predicted benign client distance.
+        
+        This allows attackers to adapt d_T to match the decreasing trend
+        of benign client distances, making optimization more effective.
+        
+        Returns:
+            Dynamic d_T value based on predicted benign distance
+        """
+        if not self.use_distance_prediction or len(self.benign_distance_history) == 0:
+            # Fallback: use self.d_T (configured value) when distance prediction is disabled or no history
+            # This is the only place where pre-configured d_T is actually used
+            if self.d_T is not None:
+                return float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+            else:
+                # Final fallback: use a reasonable default (should not reach here in normal operation)
+                # This is a safety fallback only
+                return 2.0
+        
+        predicted_benign_dist = self.predict_benign_distance()
+        
+        # Dynamic d_T = max(predicted_distance * multiplier, d_T_min)
+        # Remove base_d_T restriction to allow distance prediction mechanism full freedom
+        # Constants: multiplier=1.2, d_T_min=1.0 (hardcoded for simplicity)
+        d_T_multiplier = 1.2
+        d_T_min = 1.0
+        
+        dynamic_d_T = max(
+            predicted_benign_dist * d_T_multiplier,
+            d_T_min  # Only use d_T_min as minimum protection
+        )
+        
+        return dynamic_d_T
     
     def receive_attacker_updates(self, updates: List[torch.Tensor], client_ids: List[int], data_sizes: Dict[int, float] = None):
         """
@@ -1572,7 +1660,7 @@ class AttackerClient(Client):
             self.global_model_params = global_params.clone().detach().to(self.device)
     
     def set_constraint_params(self, d_T: float = None, gamma: float = None, 
-                              total_data_size: float = None, benign_data_sizes: dict = None):
+                            total_data_size: float = None, benign_data_sizes: dict = None):
         """
         Set constraint parameters for Formula 4.
         
@@ -1603,9 +1691,7 @@ class AttackerClient(Client):
                               # ==========================================
                               enable_final_projection: bool = True,
                               enable_light_projection_in_loop: bool = True,
-                              adaptive_d_T: bool = False,
-                              d_T_multiplier: float = 1.5,
-                              d_T_min: float = 8.0):
+):
         """
         Set Lagrangian Dual parameters (initialized according to paper Algorithm 1)
         
@@ -1628,19 +1714,11 @@ class AttackerClient(Client):
                                    If False, completely relies on Lagrangian mechanism (no final projection)
             enable_light_projection_in_loop: Whether to apply light projection within optimization loop (only for Lagrangian mode)
                                            If False, no projection within optimization loop, only relies on Lagrangian mechanism
-            adaptive_d_T: Whether to use adaptive d_T based on benign client distances (default: False)
-            d_T_multiplier: Multiplier for adaptive d_T calculation (default: 1.5)
-            d_T_min: Minimum d_T value to prevent too small thresholds (default: 8.0)
         
         Modification 2: Save initial values for reset in prepare_for_round
         """
         self.use_lagrangian_dual = use_lagrangian_dual
-        # Store adaptive d_T parameters
-        self.adaptive_d_T = adaptive_d_T
-        self.d_T_multiplier = d_T_multiplier
-        self.d_T_min = d_T_min
-        # Store base d_T value (will be set by server, but we keep original for adaptive calculation)
-        self.base_d_T = None  # Will be set from self.d_T in prepare_for_round or camouflage_update
+        # Note: d_T is set by server, used only as fallback when distance prediction is disabled or no history
         if use_lagrangian_dual:
             # Paper: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
             # Modification 2: Save initial values for reset each round
@@ -2271,61 +2349,28 @@ class AttackerClient(Client):
         # ===================================================================
         
         # ============================================================
-        # Adaptive d_T calculation (if enabled)
+        # Distance prediction d_T calculation (if enabled)
         # ============================================================
-        if self.adaptive_d_T and len(self.benign_updates) > 0:
-            # Compute distances of benign clients to their weighted average
-            # This gives us the "normal" distance range for benign clients
-            benign_distances = []
-            if len(self.benign_updates) >= 2:
-                # Compute weighted average of benign updates (excluding attacker)
-                device = target_device if hasattr(self, '_model_on_gpu') and self._model_on_gpu else self.device
-                benign_updates_gpu = [u.to(device) for u in self.benign_updates]
-                
-                # Compute weighted average of benign updates
-                if hasattr(self, 'benign_data_sizes') and len(self.benign_update_client_ids) == len(self.benign_updates):
-                    total_benign_D = sum(
-                        float(self.benign_data_sizes.get(cid, 1.0)) 
-                        for cid in self.benign_update_client_ids
-                    )
-                    benign_avg = torch.zeros_like(benign_updates_gpu[0])
-                    for idx, benign_update in enumerate(benign_updates_gpu):
-                        if idx < len(self.benign_update_client_ids):
-                            cid = self.benign_update_client_ids[idx]
-                            D_i = float(self.benign_data_sizes.get(cid, 1.0))
-                            weight = D_i / (total_benign_D + 1e-12)
-                            benign_avg += weight * benign_update
-                    else:
-                        # Fallback to simple average
-                        benign_avg = torch.stack(benign_updates_gpu).mean(dim=0)
-                
-                # Compute distance of each benign update to the average
-                for benign_update in benign_updates_gpu:
-                    dist = torch.norm((benign_update - benign_avg).view(-1)).item()
-                    benign_distances.append(dist)
-                
-                if len(benign_distances) > 0:
-                    mean_benign_dist = sum(benign_distances) / len(benign_distances)
-                    # Store base_d_T if not already set
-                    if self.base_d_T is None:
-                        self.base_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else 10.0
-                    
-                    # Calculate adaptive d_T: max(base_d_T, mean_benign_dist * multiplier, d_T_min)
-                    adaptive_d_T_value = max(
-                        self.base_d_T,
-                        mean_benign_dist * self.d_T_multiplier,
-                        self.d_T_min
-                    )
-                    
-                    # Update d_T (preserve type: tensor or float)
-                    if isinstance(self.d_T, torch.Tensor):
-                        self.d_T = torch.tensor(adaptive_d_T_value, device=self.d_T.device, dtype=self.d_T.dtype)
-                    else:
-                        self.d_T = adaptive_d_T_value
-                    
-                    print(f"    [Attacker {self.client_id}] Adaptive d_T: base={self.base_d_T:.2f}, "
-                          f"mean_benign_dist={mean_benign_dist:.2f}, "
-                          f"adaptive_d_T={adaptive_d_T_value:.2f} (multiplier={self.d_T_multiplier})")
+        # Use distance prediction for dynamic d_T if enabled
+        if self.use_distance_prediction:
+            # Store configured d_T before dynamic update (for display)
+            # This is the fallback value that would be used if prediction were disabled
+            if self.d_T is not None:
+                configured_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
+            else:
+                configured_d_T = 2.0  # Safety fallback (should not reach here)
+            
+            predicted_benign_dist = self.predict_benign_distance()
+            dynamic_d_T = self.get_dynamic_d_T()
+            # Update d_T to dynamic value
+            if isinstance(self.d_T, torch.Tensor):
+                self.d_T = torch.tensor(dynamic_d_T, device=self.d_T.device, dtype=self.d_T.dtype)
+            else:
+                self.d_T = dynamic_d_T
+            
+            print(f"    [Attacker {self.client_id}] Distance prediction: predicted_benign_dist={predicted_benign_dist:.4f}, "
+                  f"dynamic_d_T={dynamic_d_T:.4f} (history_len={len(self.benign_distance_history)}, "
+                  f"configured_d_T={configured_d_T:.2f}, multiplier=1.2)")
         
         # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
         # Constraint (4c): DISABLED (commented out in code)
