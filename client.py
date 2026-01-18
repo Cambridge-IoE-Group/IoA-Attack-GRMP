@@ -2458,14 +2458,19 @@ class AttackerClient(Client):
                         self.benign_updates
                     )
                     
-                    # Get benign mean similarity (cached before loop)
+                    # Get benign similarity statistics (cached before loop)
                     benign_sim_mean = cached_benign_sim_stats['mean']
+                    benign_sim_std = cached_benign_sim_stats['std']
                     
-                    # Determine similarity upper bound: use sim_T if provided, otherwise use benign_sim_mean
+                    # Determine similarity upper bound: use sim_T if provided, otherwise use benign statistics
+                    # Similar to distance constraint: use mean + std for better distribution matching
+                    # Note: For similarity (higher is better), using mean + std allows attacker to match
+                    #       benign clients with higher similarity (covers ~84% of distribution)
                     if self.sim_T is not None:
                         sim_upper_bound = torch.tensor(self.sim_T, device=self.device, dtype=attacker_sim.dtype)
                     else:
-                        sim_upper_bound = benign_sim_mean
+                        # Use mean + std (consistent with distance constraint logic)
+                        sim_upper_bound = benign_sim_mean + benign_sim_std
                     
                     # Constraint: attacker_sim <= sim_upper_bound (upper bound constraint)
                     # g_sim = attacker_sim - sim_upper_bound ≤ 0 (violation when attacker_sim > sim_upper_bound)
