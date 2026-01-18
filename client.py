@@ -2362,29 +2362,17 @@ class AttackerClient(Client):
             cached_benign_dist_stats = None
         
         # Pre-convert d_T to scalar once before loop (avoid repeated conversion)
-        # If d_T is None, use benign statistics (mean + 1*std) for better distribution matching
-        # Reason: Using only mean constrains attacker to bottom half of benign distribution,
-        #         while mean + std covers ~84% of benign clients (assuming normal distribution)
+        # If d_T is None, use benign statistics: max distance (covers all benign clients)
+        # Reason: Allows attacker to match any benign client's distance pattern (not too restrictive)
         if self.d_T is not None:
             d_T_val_loop = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
             d_T_source = "manual"
         else:
             # Use benign statistics when d_T is None
             if cached_benign_dist_stats is not None:
-                # Option 1: mean + 1*std (covers ~84% of benign clients if normally distributed)
-                mean_dist = float(cached_benign_dist_stats['mean'].item())
-                std_dist = float(cached_benign_dist_stats['std'].item())
-                d_T_val_loop = mean_dist + std_dist
-                d_T_source = "benign_mean+std"
-                
-                # Alternative options (commented out):
-                # Option 2: Use max (covers all benign clients)
-                # d_T_val_loop = float(cached_benign_dist_stats['max'].item())
-                # d_T_source = "benign_max"
-                
-                # Option 3: Use mean only (may be too restrictive)
-                # d_T_val_loop = mean_dist
-                # d_T_source = "benign_mean"
+                # Use max distance (covers all benign clients, allows attacker to match any benign pattern)
+                d_T_val_loop = float(cached_benign_dist_stats['max'].item())
+                d_T_source = "benign_max"
             else:
                 d_T_val_loop = None
                 d_T_source = "none"
@@ -2538,10 +2526,12 @@ class AttackerClient(Client):
                         sim_lower_bound = torch.clamp(sim_center - benign_sim_std, min=-1.0, max=1.0)
                         sim_upper_bound = torch.clamp(sim_center + benign_sim_std, min=-1.0, max=1.0)
                     else:
-                        # Use benign statistics: mean ± std (covers ~68% of benign clients if normally distributed)
+                        # Use benign statistics: [min, max] (covers all benign clients, allows attacker to match any benign pattern)
                         # Clamp to valid range [-1, 1] for cosine similarity
-                        sim_lower_bound = torch.clamp(benign_sim_mean - benign_sim_std, min=-1.0, max=1.0)
-                        sim_upper_bound = torch.clamp(benign_sim_mean + benign_sim_std, min=-1.0, max=1.0)
+                        benign_sim_min = cached_benign_sim_stats['min']
+                        benign_sim_max = cached_benign_sim_stats['max']
+                        sim_lower_bound = torch.clamp(benign_sim_min, min=-1.0, max=1.0)
+                        sim_upper_bound = torch.clamp(benign_sim_max, min=-1.0, max=1.0)
                     
                     # Two-sided constraint: sim_lower_bound <= attacker_sim <= sim_upper_bound
                     # Combine violations: g_sim = max(0, sim_lower_bound - attacker_sim) + max(0, attacker_sim - sim_upper_bound)
@@ -2727,15 +2717,18 @@ class AttackerClient(Client):
                         # Recompute attacker_sim for logging (or use cached value if available)
                         attacker_sim_log = self._compute_cosine_similarity_to_aggregated(proxy_param, self.benign_updates).item()
                         benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
-                        benign_sim_std_val = cached_benign_sim_stats['std'].item()
+                        benign_sim_min_val = cached_benign_sim_stats['min'].item()
+                        benign_sim_max_val = cached_benign_sim_stats['max'].item()
                         # Recompute bounds for logging (consistent with constraint calculation above)
                         if self.sim_T is not None:
                             sim_center_log = self.sim_T
+                            benign_sim_std_val = cached_benign_sim_stats['std'].item()
                             sim_lower_bound_log = max(-1.0, min(1.0, sim_center_log - benign_sim_std_val))
                             sim_upper_bound_log = max(-1.0, min(1.0, sim_center_log + benign_sim_std_val))
                         else:
-                            sim_lower_bound_log = max(-1.0, min(1.0, benign_sim_mean_val - benign_sim_std_val))
-                            sim_upper_bound_log = max(-1.0, min(1.0, benign_sim_mean_val + benign_sim_std_val))
+                            # Use benign statistics: [min, max] (covers all benign clients)
+                            sim_lower_bound_log = max(-1.0, min(1.0, benign_sim_min_val))
+                            sim_upper_bound_log = max(-1.0, min(1.0, benign_sim_max_val))
                         log_msg += f", sim={attacker_sim_log:.4f} ∈ [{sim_lower_bound_log:.4f}, {sim_upper_bound_log:.4f}], " \
                                    f"sim_benign_mean={benign_sim_mean_val:.4f}, lambda_sim({lambda_sim_val:.4f}→{new_lambda_sim:.4f}), g_sim={g_sim_val:.4f}"
                     print(log_msg)
@@ -2764,15 +2757,18 @@ class AttackerClient(Client):
                             ).item()
                         
                         benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
-                        benign_sim_std_val = cached_benign_sim_stats['std'].item()
+                        benign_sim_min_val = cached_benign_sim_stats['min'].item()
+                        benign_sim_max_val = cached_benign_sim_stats['max'].item()
                         # Two-sided constraint: sim_lower_bound <= attacker_sim <= sim_upper_bound
                         if self.sim_T is not None:
                             sim_center_val = self.sim_T
+                            benign_sim_std_val = cached_benign_sim_stats['std'].item()
                             sim_lower_bound_val = max(-1.0, min(1.0, sim_center_val - benign_sim_std_val))
                             sim_upper_bound_val = max(-1.0, min(1.0, sim_center_val + benign_sim_std_val))
                         else:
-                            sim_lower_bound_val = max(-1.0, min(1.0, benign_sim_mean_val - benign_sim_std_val))
-                            sim_upper_bound_val = max(-1.0, min(1.0, benign_sim_mean_val + benign_sim_std_val))
+                            # Use benign statistics: [min, max] (covers all benign clients)
+                            sim_lower_bound_val = max(-1.0, min(1.0, benign_sim_min_val))
+                            sim_upper_bound_val = max(-1.0, min(1.0, benign_sim_max_val))
                         # Constraint satisfied when attacker_sim is within bounds
                         sim_satisfied = (attacker_sim_val >= sim_lower_bound_val) and (attacker_sim_val <= sim_upper_bound_val)
                     else:
@@ -2789,14 +2785,17 @@ class AttackerClient(Client):
                             log_msg = f"    [Attacker {self.client_id}] Early stopping: "
                             log_msg += f"dist={current_dist:.4f} <= d_T={d_T_val_loop:.4f} "
                             if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
-                                benign_sim_std_log = cached_benign_sim_stats['std'].item()
+                                benign_sim_min_log = cached_benign_sim_stats['min'].item()
+                                benign_sim_max_log = cached_benign_sim_stats['max'].item()
                                 if self.sim_T is not None:
                                     sim_center_log = self.sim_T
+                                    benign_sim_std_log = cached_benign_sim_stats['std'].item()
                                     sim_lower_bound_log = max(-1.0, min(1.0, sim_center_log - benign_sim_std_log))
                                     sim_upper_bound_log = max(-1.0, min(1.0, sim_center_log + benign_sim_std_log))
                                 else:
-                                    sim_lower_bound_log = max(-1.0, min(1.0, benign_sim_mean_val - benign_sim_std_log))
-                                    sim_upper_bound_log = max(-1.0, min(1.0, benign_sim_mean_val + benign_sim_std_log))
+                                    # Use benign statistics: [min, max] (covers all benign clients)
+                                    sim_lower_bound_log = max(-1.0, min(1.0, benign_sim_min_log))
+                                    sim_upper_bound_log = max(-1.0, min(1.0, benign_sim_max_log))
                                 log_msg += f", sim={attacker_sim_val:.4f} ∈ [{sim_lower_bound_log:.4f}, {sim_upper_bound_log:.4f}] "
                             log_msg += f"for {constraint_satisfied_steps} consecutive steps (step {step}/{self.proxy_steps-1})"
                             print(log_msg)
