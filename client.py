@@ -2287,24 +2287,39 @@ class AttackerClient(Client):
         
         # Cache benign distance statistics before loop (for automatic d_T calculation)
         # Similar to similarity constraint: if d_T is None, use benign mean distance
+        # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         if len(self.benign_updates) > 0:
             cached_benign_dist_stats = self._compute_benign_distance_statistics(
                 self.benign_updates,
-                proxy_param
+                proxy_param.detach()
             )
         else:
             cached_benign_dist_stats = None
         
         # Pre-convert d_T to scalar once before loop (avoid repeated conversion)
-        # If d_T is None, use benign mean distance (similar to sim_T logic)
+        # If d_T is None, use benign statistics (mean + 1*std) for better distribution matching
+        # Reason: Using only mean constrains attacker to bottom half of benign distribution,
+        #         while mean + std covers ~84% of benign clients (assuming normal distribution)
         if self.d_T is not None:
             d_T_val_loop = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
             d_T_source = "manual"
         else:
-            # Use benign mean distance when d_T is None
+            # Use benign statistics when d_T is None
             if cached_benign_dist_stats is not None:
-                d_T_val_loop = float(cached_benign_dist_stats['mean'].item())
-                d_T_source = "benign_mean"
+                # Option 1: mean + 1*std (covers ~84% of benign clients if normally distributed)
+                mean_dist = float(cached_benign_dist_stats['mean'].item())
+                std_dist = float(cached_benign_dist_stats['std'].item())
+                d_T_val_loop = mean_dist + std_dist
+                d_T_source = "benign_mean+std"
+                
+                # Alternative options (commented out):
+                # Option 2: Use max (covers all benign clients)
+                # d_T_val_loop = float(cached_benign_dist_stats['max'].item())
+                # d_T_source = "benign_max"
+                
+                # Option 3: Use mean only (may be too restrictive)
+                # d_T_val_loop = mean_dist
+                # d_T_source = "benign_mean"
             else:
                 d_T_val_loop = None
                 d_T_source = "none"
@@ -2315,14 +2330,16 @@ class AttackerClient(Client):
         # Print initial state with d_T value (whether manual or auto-computed)
         if d_T_val_loop is not None:
             try:
-                initial_dist_tensor, _ = self._compute_distance_update_space(
-                    proxy_param,
-                    self.benign_updates
-                )
-                initial_dist = initial_dist_tensor.item()
-                initial_g = initial_dist - d_T_val_loop
-                initial_lambda = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt if self.lambda_dt is not None else 0.0
-                initial_loss = self._compute_global_loss(proxy_param, self.benign_updates).item()
+                # CRITICAL: Use detach() for initial calculations to avoid interfering with optimization loop's computation graph
+                with torch.no_grad():
+                    initial_dist_tensor, _ = self._compute_distance_update_space(
+                        proxy_param.detach(),
+                        self.benign_updates
+                    )
+                    initial_dist = initial_dist_tensor.item()
+                    initial_g = initial_dist - d_T_val_loop
+                    initial_lambda = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt if self.lambda_dt is not None else 0.0
+                    initial_loss = self._compute_global_loss(proxy_param.detach(), self.benign_updates).item()
                 d_T_info = f"d_T={d_T_val_loop:.4f} ({d_T_source})" if d_T_source != "none" else "d_T=None"
                 print(f"    [Attacker {self.client_id}] Starting optimization (UPDATE space): "
                       f"initial_dist={initial_dist:.4f}, {d_T_info}, g={initial_g:.4f}, "
@@ -2334,11 +2351,12 @@ class AttackerClient(Client):
                 raise
         
         # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
+        # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
             # Use initial proxy_param to compute reference statistics
             cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
                 self.benign_updates,
-                proxy_param
+                proxy_param.detach()
             )
         else:
             cached_benign_sim_stats = None
@@ -2582,7 +2600,9 @@ class AttackerClient(Client):
                 # subgradient = (constraint value - bound)
                 # When constraint is violated (constraint value > bound), subgradient > 0, λ increases to penalize violation
                 
-                if self.d_T is not None:
+                # CRITICAL FIX: Check d_T_val_loop (effective d_T) instead of self.d_T
+                # d_T_val_loop may be computed from benign_mean even when self.d_T is None
+                if d_T_val_loop is not None:
                     # Reuse distance computed in objective function above (no need to recompute)
                     current_dist = dist_to_global_for_objective.item()
                     lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
@@ -2591,12 +2611,12 @@ class AttackerClient(Client):
                     # - If constraint is violated (g > 0): λ increases to penalize violation
                     # - If constraint is satisfied (g < 0): λ decreases (but clamped to ≥ 0)
                     #   This allows the system to "relax" when constraint is well-satisfied
-                    g_val = current_dist - d_T_val_loop if d_T_val_loop is not None else 0.0
+                    g_val = current_dist - d_T_val_loop
                     new_lambda = lambda_val + self.lambda_lr * g_val
                     new_lambda = max(0.0, new_lambda)  # Ensure non-negative
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
                     self.lambda_dt = torch.tensor(new_lambda, device=target_device, requires_grad=False)
-                
+                    
                     # Update cosine similarity constraint multiplier
                     if self.use_cosine_similarity_constraint and self.lambda_sim is not None:
                         # Standard dual ascent update: λ_sim(t+1) = max(0, λ_sim(t) + α_λ_sim * g_sim)
