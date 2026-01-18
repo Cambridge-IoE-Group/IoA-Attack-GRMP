@@ -694,11 +694,11 @@ def main():
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
         
         # Lagrangian multiplier parameters
-        'lambda_init': 100,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
-        'lambda_lr': 1.0,    # Learning rate for λ(t) update (dual ascent step size)
+        'lambda_init': 0.1,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
+        'lambda_lr': 0.01,    # Learning rate for λ(t) update (dual ascent step size)
         # ========== Cosine Similarity Constraint Parameters ==========
-        'lambda_sim_init': 100,  # Initial λ_sim(t) value for cosine similarity constraint: attacker_sim >= benign_sim_mean
-        'lambda_sim_lr': 1.0,  # Learning rate for λ_sim(t) update (dual ascent step size, typically same as lambda_lr)
+        'lambda_sim_init': 1.0,  # Initial λ_sim(t) value for cosine similarity constraint: attacker_sim >= benign_sim_mean
+        'lambda_sim_lr': 0.01,  # Learning rate for λ_sim(t) update (dual ascent step size, typically same as lambda_lr)
         'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraint (bool, True/False)
         
         # ========== Proxy Loss Estimation Parameters ==========
