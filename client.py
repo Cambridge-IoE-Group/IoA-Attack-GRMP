@@ -323,32 +323,29 @@ class AttackerClient(Client):
         
         # Formula 4 constraints parameters
         self.d_T = None  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # self.gamma = None  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-        self.gamma = None  # Temporarily set to None to disable constraint (4c)
-        # ==========================================
         self.global_model_params = None  # Store global model params for constraint (4b) (will be on GPU when needed)
         # Paper Formula (2): w'_g(t) = Σ_{i=1}^I (D_i(t)/D(t)) β'_{i,j}(t) w_i(t) + (D'_j(t)/D(t)) w'_j(t)
         self.total_data_size = None  # D(t): Total data size for aggregation weight calculation
         self.benign_data_sizes = {}  # {client_id: D_i(t)}: Data sizes for each benign client
         
-        # Lagrangian dual variables (λ(t) and ρ(t) from paper)
+        # Cosine similarity threshold (similar to d_T for distance constraint)
+        self.sim_T = None  # Cosine similarity upper bound: cos(Δ_att, Δ_g) ≤ sim_T (None = use benign mean similarity)
+        
+        # Lagrangian dual variables (λ(t) from paper)
         # Initialized in set_lagrangian_params
         self.lambda_dt = None  # λ(t): Lagrangian multiplier for constraint (4b)
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # self.rho_dt = None     # ρ(t): Lagrangian multiplier for constraint (4c)
-        self.rho_dt = None     # Temporarily disabled (constraint 4c is commented out)
-        # self.rho_lr = 0.01     # Learning rate for ρ(t) update
-        self.rho_lr = 0.01     # Temporarily disabled (constraint 4c is commented out)
-        # self.rho_init_value = None     # Save initial ρ value for reset in prepare_for_round
-        self.rho_init_value = None     # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
         self.use_lagrangian_dual = False  # Whether to use Lagrangian Dual mechanism
         self.lambda_lr = 0.01  # Learning rate for λ(t) update
         # Save initial values for reset in prepare_for_round (Modification 1 and 2)
         self.lambda_init_value = None  # Save initial λ value for reset in prepare_for_round
         self.enable_final_projection = True  # Whether to apply final projection after optimization (only for Lagrangian mode)
         self.enable_light_projection_in_loop = True  # Whether to apply light projection within optimization loop (only for Lagrangian mode)
+        
+        # Cosine similarity constraint parameters (similar to distance constraint)
+        self.use_cosine_similarity_constraint = False  # Whether to use cosine similarity constraint
+        self.lambda_sim = None  # λ_sim(t): Lagrangian multiplier for cosine similarity constraint
+        self.lambda_sim_lr = 0.01  # Learning rate for λ_sim(t) update
+        self.lambda_sim_init_value = None  # Save initial λ_sim value for reset in prepare_for_round
         
         # Track violation history for adaptive λ initialization (Optimization)
         self.last_violation = None  # Last round's constraint violation value (distance, not violation amount)
@@ -413,10 +410,14 @@ class AttackerClient(Client):
         # Note: d_T is used only as fallback when distance prediction is disabled or no history
 
         # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
-        # Reason: Prevent λ and ρ from accumulating across rounds, which causes numerical instability and optimization imbalance
+        # Reason: Prevent λ from accumulating across rounds, which causes numerical instability and optimization imbalance
         # Optimization: Use adaptive λ initialization based on previous round's violation to provide better starting point
-        # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_init_value check =====
-        if self.use_lagrangian_dual and self.lambda_init_value is not None:  # Removed rho_init_value check
+        
+        # Reset cosine similarity constraint multiplier
+        if self.use_cosine_similarity_constraint and self.lambda_sim_init_value is not None:
+            self.lambda_sim = torch.tensor(self.lambda_sim_init_value, requires_grad=False)
+        
+        if self.use_lagrangian_dual and self.lambda_init_value is not None:
             # Adaptive λ initialization: if last round had large violation, use larger initial λ
             d_T_init = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
             if self.last_violation is not None and d_T_init is not None and self.last_violation > d_T_init * 1.5:
@@ -434,8 +435,6 @@ class AttackerClient(Client):
                           f"(based on last violation: {self.last_violation:.4f})")
             else:
                 self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
             # ==========================================
 
     def receive_benign_updates(self, updates: List[torch.Tensor], client_ids: Optional[List[int]] = None):
@@ -450,7 +449,7 @@ class AttackerClient(Client):
         # Store detached copies on CPU to save GPU memory
         # Updates will be moved to GPU only when needed for VGAE processing
         self.benign_updates = [u.detach().clone().cpu() for u in updates]
-        # Store corresponding client IDs for weighted average calculation in constraint (4c)
+        # Store corresponding client IDs for weighted average calculation
         if client_ids is not None:
             self.benign_update_client_ids = client_ids.copy()
         else:
@@ -529,55 +528,8 @@ class AttackerClient(Client):
         del benign_updates_gpu, benign_stack, benign_mean
         torch.cuda.empty_cache()
         
-        # ===== CONSTRAINT (4c) COMMENTED OUT: Always use all updates =====
-        # If gamma is not set, use all updates
-        # if self.gamma is None:
-        #     return self.benign_updates
-        # 
-        # # Convert gamma to capacity
-        # capacity = float(self.gamma)
-        # n = len(distances)
-        # 
-        # # Handle edge cases
-        # if n == 0:
-        #     return []
-        # if capacity <= 0:
-        #     # If capacity is 0 or negative, select item with minimum distance
-        #     min_idx = np.argmin(distances)
-        #     return [self.benign_updates[min_idx]]
-        # 
-        # # For 0-1 Knapsack with minimization objective:
-        # # We want to minimize sum of selected distances, subject to sum ≤ capacity
-        # # This is equivalent to: maximize number of items selected (or maximize sum of unselected)
-        # # while keeping sum of selected ≤ capacity
-        # 
-        # # Greedy approach: sort by distance and select items until capacity is reached
-        # # This gives a good approximation and is efficient
-        # sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
-        # 
-        # selected_indices = []
-        # total_dist = 0.0
-        # 
-        # for idx in sorted_indices:
-        #     d = distances[idx]
-        #     if total_dist + d <= capacity:
-        #         selected_indices.append(idx)
-        #         total_dist += d
-        #     else:
-        #         break
-        # 
-        # # If no items selected (all distances > capacity), select the one with minimum distance
-        # if not selected_indices:
-        #     min_idx = np.argmin(distances)
-        #     selected_indices = [min_idx]
-        # 
-        # # Return selected updates
-        # selected = [self.benign_updates[i] for i in sorted(selected_indices)]
-        # 
-        # return selected
-        # ====================================================================
-        # Since constraint (4c) is disabled, always return all benign updates
-        return self.benign_updates
+        # Always return all benign updates
+            return self.benign_updates
     
     def _get_selected_benign_indices(self) -> List[int]:
         """
@@ -615,46 +567,8 @@ class AttackerClient(Client):
         del benign_updates_gpu, benign_stack, benign_mean
         torch.cuda.empty_cache()
         
-        # ===== CONSTRAINT (4c) COMMENTED OUT: Always return all indices =====
-        # If gamma is not set, use all updates
-        # if self.gamma is None:
-        #     return list(range(len(self.benign_updates)))
-        # 
-        # # Convert gamma to capacity
-        # capacity = float(self.gamma)
-        # n = len(distances)
-        # 
-        # # Handle edge cases
-        # if n == 0:
-        #     return []
-        # if capacity <= 0:
-        #     # If capacity is 0 or negative, select item with minimum distance
-        #     min_idx = np.argmin(distances)
-        #     return [int(min_idx)]
-        # 
-        # # Greedy approach: sort by distance and select items until capacity is reached
-        # sorted_indices = np.argsort(distances)  # Sort by distance (ascending)
-        # 
-        # selected_indices = []
-        # total_dist = 0.0
-        # 
-        # for idx in sorted_indices:
-        #     d = distances[idx]
-        #     if total_dist + d <= capacity:
-        #         selected_indices.append(int(idx))
-        #         total_dist += d
-        #     else:
-        #         break
-        # 
-        # # If no items selected (all distances > capacity), select the one with minimum distance
-        # if not selected_indices:
-        #     min_idx = np.argmin(distances)
-        #     selected_indices = [int(min_idx)]
-        # 
-        # return sorted(selected_indices)
-        # =====================================================================
-        # Since constraint (4c) is disabled, always return all indices
-        return list(range(len(self.benign_updates)))
+        # Always return all indices
+            return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
@@ -1109,8 +1023,8 @@ class AttackerClient(Client):
             # For full fine-tuning mode, prepare param_dict (LoRA mode doesn't need this)
             param_dict = {}
             if not use_lora:
-                # Skip dimension check if already validated (performance optimization)
-                param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
+            # Skip dimension check if already validated (performance optimization)
+            param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
 
             # CRITICAL FIX: Ensure all parameters in param_dict are on the correct device
             # Normalize device: always use 'cuda:0' for consistency  
@@ -1525,7 +1439,7 @@ class AttackerClient(Client):
             
             if input_numel == self._flat_numel:
                 # Already LoRA-only flat, use directly
-                self.global_model_params = global_params.clone().detach().to(self.device)
+        self.global_model_params = global_params.clone().detach().to(self.device)
             else:
                 # Full-model flat: Extract LoRA parameters in same order as get_flat_params()
                 # CRITICAL: Must match get_flat_params() order exactly
@@ -1569,38 +1483,31 @@ class AttackerClient(Client):
             # Non-LoRA mode: Use as-is
             self.global_model_params = global_params.clone().detach().to(self.device)
     
-    def set_constraint_params(self, d_T: float = None, gamma: float = None, 
-                            total_data_size: float = None, benign_data_sizes: dict = None):
+    def set_constraint_params(self, d_T: float = None, sim_T: float = None,
+                              total_data_size: float = None, benign_data_sizes: dict = None):
         """
         Set constraint parameters for Formula 4.
         
         Args:
             d_T: Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # gamma: Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-            gamma: Temporarily disabled (constraint 4c is commented out)
-            # ==========================================
+            sim_T: Cosine similarity upper bound: cos(Δ_att, Δ_g) ≤ sim_T (None = use benign mean similarity)
             total_data_size: D(t) - Total data size for aggregation weight calculation (Paper Formula (2))
             benign_data_sizes: Dict {client_id: D_i(t)} - Data sizes for each benign client (Paper Formula (2))
         """
         self.d_T = d_T  # Constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # self.gamma = gamma  # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-        self.gamma = gamma  # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
+        self.sim_T = sim_T  # Cosine similarity threshold: cos(Δ_att, Δ_g) ≥ sim_T
         self.total_data_size = total_data_size  # D(t) for weight calculation
         if benign_data_sizes is not None:
             self.benign_data_sizes = benign_data_sizes  # {client_id: D_i(t)}
     
     def set_lagrangian_params(self, use_lagrangian_dual: bool = False,
                               lambda_init: float = 0.1,
-                              # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                              # rho_init: float = 0.1,
                               lambda_lr: float = 0.01,
-                              # rho_lr: float = 0.01,
-                              # ==========================================
                               enable_final_projection: bool = True,
                               enable_light_projection_in_loop: bool = True,
+                              use_cosine_similarity_constraint: bool = False,
+                              lambda_sim_init: float = 0.1,
+                              lambda_sim_lr: float = 0.01,
 ):
         """
         Set Lagrangian Dual parameters (initialized according to paper Algorithm 1)
@@ -1608,18 +1515,12 @@ class AttackerClient(Client):
         Paper reference: Section 3, Algorithm 1
         - Lagrangian function: eq:lagrangian
         - Optimization subproblem: eq:wprime_sub
-        - Initialization: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
+        - Initialization: λ(1)≥0
         
         Args:
             use_lagrangian_dual: Whether to use Lagrangian Dual mechanism
             lambda_init: Initial λ(1) value (≥0, per paper Algorithm 1)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # rho_init: Initial ρ(1) value (≥0, per paper Algorithm 1)
-            # ==========================================
             lambda_lr: Learning rate for λ(t) update (subgradient step size)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # rho_lr: Learning rate for ρ(t) update (subgradient step size)
-            # ==========================================
             enable_final_projection: Whether to apply final projection after optimization (only for Lagrangian mode)
                                    If False, completely relies on Lagrangian mechanism (no final projection)
             enable_light_projection_in_loop: Whether to apply light projection within optimization loop (only for Lagrangian mode)
@@ -1630,31 +1531,27 @@ class AttackerClient(Client):
         self.use_lagrangian_dual = use_lagrangian_dual
         # Note: d_T is set by server, used only as fallback when distance prediction is disabled or no history
         if use_lagrangian_dual:
-            # Paper: λ(1)≥0, ρ(1)≥0 [ρ disabled due to constraint 4c being commented out]
+            # Paper: λ(1)≥0
             # Modification 2: Save initial values for reset each round
             self.lambda_init_value = max(0.0, lambda_init)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # self.rho_init_value = max(0.0, rho_init)
-            self.rho_init_value = None  # Temporarily disabled (constraint 4c is commented out)
-            # ==========================================
             self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # self.rho_dt = torch.tensor(self.rho_init_value, requires_grad=False)
-            self.rho_dt = None  # Temporarily disabled (constraint 4c is commented out)
-            # ==========================================
             self.lambda_lr = lambda_lr
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # self.rho_lr = rho_lr
-            # self.rho_lr is already set to 0.01 in __init__, but not used since constraint 4c is disabled
-            # ==========================================
             self.enable_final_projection = enable_final_projection
             self.enable_light_projection_in_loop = enable_light_projection_in_loop
+            
+            # Cosine similarity constraint parameters
+            self.use_cosine_similarity_constraint = use_cosine_similarity_constraint
+            if use_cosine_similarity_constraint:
+                self.lambda_sim_init_value = max(0.0, lambda_sim_init)
+                self.lambda_sim = torch.tensor(self.lambda_sim_init_value, requires_grad=False)
+                self.lambda_sim_lr = lambda_sim_lr
+            else:
+                self.lambda_sim = None
+                self.lambda_sim_init_value = None
         else:
             # Hard constraint projection mode
             self.lambda_dt = None
-            self.rho_dt = None
             self.lambda_init_value = None
-            self.rho_init_value = None
             self.enable_final_projection = True  # Default to True for hard constraint mode (always applies projection)
             self.enable_light_projection_in_loop = False  # Not applicable in hard constraint mode
 
@@ -1761,6 +1658,89 @@ class AttackerClient(Client):
         diff = malicious_update.view(-1) - aggregated_update.view(-1)
         distance = torch.norm(diff)
         return distance, aggregated_update
+    
+    def _compute_cosine_similarity_to_aggregated(self, malicious_update: torch.Tensor,
+                                                 benign_updates: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Compute cosine similarity between attacker update and aggregated update.
+        
+        Similar to distance calculation, uses standard aggregation (including attacker).
+        sim_att = cosine_similarity(Δ_att, Δ_g)
+        where Δ_g = Σ_i (D_i / D_eff) * Δ_i + (D_att / D_eff) * Δ_att (includes attacker)
+        
+        Args:
+            malicious_update: Δ_att (attacker's update)
+            benign_updates: List of all benign updates Δ_i
+        
+        Returns:
+            cosine_similarity: cos(Δ_att, Δ_g) ∈ [-1, 1]
+        """
+        # Compute aggregated update (same as distance calculation)
+        aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update, benign_updates)
+        
+        # Flatten tensors
+        malicious_flat = malicious_update.view(-1)
+        aggregated_flat = aggregated_update.view(-1)
+        
+        # Compute cosine similarity
+        sim = torch.cosine_similarity(
+            malicious_flat.unsqueeze(0),
+            aggregated_flat.unsqueeze(0),
+            dim=1
+        )
+        
+        return sim.squeeze(0)  # Return scalar tensor
+    
+    def _compute_benign_cosine_similarity_statistics(self, benign_updates: List[torch.Tensor],
+                                                     malicious_update: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Compute cosine similarity statistics for benign clients.
+        
+        For each benign update Δ_i, compute cosine_similarity(Δ_i, Δ_g),
+        where Δ_g is the aggregated update (including attacker).
+        
+        Args:
+            benign_updates: List of all benign updates Δ_i
+            malicious_update: Δ_att (attacker's update, used for aggregation reference)
+        
+        Returns:
+            Dictionary with statistics: mean, std, min, max, median
+        """
+        # Compute aggregated update (for reference, same as distance calculation)
+        aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update, benign_updates)
+        aggregated_flat = aggregated_update.view(-1)
+        device = aggregated_flat.device
+        
+        # Compute similarity for each benign update
+        benign_similarities = []
+        for benign_update in benign_updates:
+            benign_flat = benign_update.view(-1).to(device)
+            sim = torch.cosine_similarity(
+                benign_flat.unsqueeze(0),
+                aggregated_flat.unsqueeze(0),
+                dim=1
+            )
+            benign_similarities.append(sim.squeeze(0))
+        
+        if len(benign_similarities) == 0:
+            # Return dummy statistics if no benign updates
+            return {
+                'mean': torch.tensor(1.0, device=device),
+                'std': torch.tensor(0.0, device=device),
+                'min': torch.tensor(1.0, device=device),
+                'max': torch.tensor(1.0, device=device),
+                'median': torch.tensor(1.0, device=device)
+            }
+        
+        benign_similarities_tensor = torch.stack(benign_similarities)
+        
+        return {
+            'mean': benign_similarities_tensor.mean(),
+            'std': benign_similarities_tensor.std(),
+            'min': benign_similarities_tensor.min(),
+            'max': benign_similarities_tensor.max(),
+            'median': benign_similarities_tensor.median()
+        }
     
     def _hard_project_update_space(self, malicious_update: torch.Tensor,
                                      benign_updates: List[torch.Tensor],
@@ -2258,45 +2238,15 @@ class AttackerClient(Client):
         self._use_lora_in_optimization = use_lora
         # ===================================================================
         
-        # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
-        # Constraint (4c): DISABLED (commented out in code)
-        constraint_c_value_for_update = 0.0  # Used for updating ρ
-        constraint_c_term_base = None  # Cached base term for Lagrangian mode (on GPU)
-        
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # if self.gamma is not None and len(self.benign_updates) > 0:
-        #     # Compute constraint (4c) value once before loop (constant value)
-        #     # Paper constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-        #     # where w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) is the weighted mean of ALL benign clients
-        #     # (not just selected ones)
-        #     ...
-        #     constraint_c_value_for_update = agg_dist.item()
-        #     
-        #     # For Lagrangian mode, cache the base term on GPU to avoid recomputation
-        #     if self.use_lagrangian_dual:
-        #         constraint_c_term_base = agg_dist  # Keep on GPU for reuse in loop
-        #     else:
-        #         ...
-        # ==========================================
-        constraint_c_value_for_update = 0.0  # Dummy value since constraint (4c) is disabled
-        constraint_c_term_base = None  # Dummy value since constraint (4c) is disabled
         
         # OPTIMIZATION 5: Cache Lagrangian multipliers on GPU before loop
         # Ensure multipliers are on correct device to avoid repeated conversions
-        # ===== CONSTRAINT (4c) COMMENTED OUT: Only check lambda_dt =====
-        if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
+        if self.use_lagrangian_dual and self.lambda_dt is not None:
             if isinstance(self.lambda_dt, torch.Tensor):
                 if not self._device_matches(self.lambda_dt.device, target_device):
                     self.lambda_dt = self.lambda_dt.to(target_device)
             else:
                 self.lambda_dt = torch.tensor(self.lambda_dt, device=target_device)
-            
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # if isinstance(self.rho_dt, torch.Tensor):
-            #     if not self._device_matches(self.rho_dt.device, target_device):
-            #         self.rho_dt = self.rho_dt.to(target_device)
-            # else:
-            #     self.rho_dt = torch.tensor(self.rho_dt, device=target_device)
             # ==========================================
         
         # ============================================================
@@ -2328,6 +2278,16 @@ class AttackerClient(Client):
         
         # Pre-convert d_T to scalar once before loop (avoid repeated conversion)
         d_T_val_loop = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
+        
+        # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
+        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
+            # Use initial proxy_param to compute reference statistics
+            cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
+                self.benign_updates,
+                proxy_param
+            )
+            else:
+            cached_benign_sim_stats = None
         
         # Early stopping variables: track constraint satisfaction stability
         constraint_satisfied_steps = 0
@@ -2365,14 +2325,11 @@ class AttackerClient(Client):
             # Build optimization objective: choose mechanism based on whether using Lagrangian Dual
             # ============================================================
             
-            if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
+            if self.use_lagrangian_dual and self.lambda_dt is not None:
                 # ========== Use Lagrangian Dual mechanism (paper eq:lagrangian and eq:wprime_sub) ==========
                 
                 # OPTIMIZATION 5: Use cached multipliers directly (already on correct device)
                 lambda_dt_tensor = self.lambda_dt  # Direct use, no conversion needed
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # rho_dt_tensor = self.rho_dt  # Direct use, no conversion needed
-                # ==========================================
                 
                 # ============================================================
                 # Constraint (4b): d(Δ_att, Δ_g) ≤ d_T in UPDATE space
@@ -2419,29 +2376,54 @@ class AttackerClient(Client):
                 
                 constraint_b_term = penalty
                 
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # Constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-                # For constraint (4c): Σ(...) - Γ ≤ 0, so L = F(w'_g) - ρ (Σ(...) - Γ)
-                # Converting to minimization: minimize -L = -F(w'_g) + ρ (Σ(...) - Γ)
-                # Since ρ Γ is constant, we use: minimize -F(w'_g) + ρ Σ(...)
-                # OPTIMIZATION 2: Use cached constraint (4c) value (computed before loop)
-                # constraint_c_term = torch.tensor(0.0, device=self.device)
-                # if constraint_c_term_base is not None:
-                #     # Use cached base term (already on GPU)
-                #     constraint_c_term = rho_dt_tensor * constraint_c_term_base
-                constraint_c_term = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
-                # ==========================================
+                # ============================================================
+                # Cosine Similarity Constraint
+                # ============================================================
+                if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                    # Compute attacker similarity
+                    attacker_sim = self._compute_cosine_similarity_to_aggregated(
+                        proxy_param,
+                        self.benign_updates
+                    )
+                    
+                    # Get benign mean similarity (cached before loop)
+                    benign_sim_mean = cached_benign_sim_stats['mean']
+                    
+                    # Determine similarity upper bound: use sim_T if provided, otherwise use benign_sim_mean
+                    if self.sim_T is not None:
+                        sim_upper_bound = torch.tensor(self.sim_T, device=self.device, dtype=attacker_sim.dtype)
+                    else:
+                        sim_upper_bound = benign_sim_mean
+                    
+                    # Constraint: attacker_sim <= sim_upper_bound (upper bound constraint)
+                    # g_sim = attacker_sim - sim_upper_bound ≤ 0 (violation when attacker_sim > sim_upper_bound)
+                    g_sim = attacker_sim - sim_upper_bound
+                    
+                    # Lagrangian multiplier
+                    lambda_sim_tensor = self.lambda_sim
+                    
+                    # Similarity penalty term
+                    sim_penalty = lambda_sim_tensor * g_sim
+                    
+                    # Constraint violation (for updating lambda_sim)
+                    constraint_sim_violation = F.relu(g_sim)
+                else:
+                    sim_penalty = torch.tensor(0.0, device=self.device)
+                    constraint_sim_violation = torch.tensor(0.0, device=self.device)
+                
                 
                 # ============================================================
                 # Build Lagrangian objective function (paper formula eq:wprime_sub)
                 # ============================================================
                 # Paper: maximize F(w'_g(t)) subject to constraints
-                # Standard Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T) - ρ (Σ(...) - Γ)  [ρ term removed]
-                # Converting to minimization: minimize -L = -F(w'_g) + λ (d(w'_j, w'_g) - d_T) + ρ Σ(...)  [ρ term removed]
-                # Standard form: minimize -F(w'_g) + λ * (dist - d_T)
+                # Standard Lagrangian: L = F(w'_g) - λ (d(w'_j, w'_g) - d_T)
+                # Converting to minimization: minimize -L = -F(w'_g) + λ (d(w'_j, w'_g) - d_T)
+                # Standard form: minimize -F(w'_g) + λ * (dist - d_T) + λ_sim * (attacker_sim - sim_upper_bound)
                 # When dist < d_T: penalty is negative (rewards satisfaction)
                 # When dist > d_T: penalty is positive (penalizes violation)
-                lagrangian_objective = -global_loss + constraint_b_term  # Removed constraint_c_term
+                # When attacker_sim <= sim_upper_bound: sim_penalty <= 0 (rewards satisfaction)
+                # When attacker_sim > sim_upper_bound: sim_penalty > 0 (penalizes violation)
+                lagrangian_objective = -global_loss + constraint_b_term + sim_penalty
                 
                 # ============================================================
                 # ============================================================
@@ -2449,18 +2431,15 @@ class AttackerClient(Client):
                 # ============================================================
                 # g is already computed above (dist - d_T)
                 constraint_b_violation = F.relu(g) if self.d_T is not None else torch.tensor(0.0, device=self.device)
-            
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # constraint_c_violation = torch.tensor(0.0, device=self.device)
-                # if self.gamma is not None and len(self.benign_updates) > 0:
-                #         constraint_c_violation = F.relu(torch.tensor(constraint_c_value_for_update, device=self.device) - self.gamma)
-                constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
-                # ==========================================
                 
             else:
                 # ========== Use hard constraint projection mechanism (original logic) ==========
                 # Objective: maximize global_loss => minimize -global_loss
                 lagrangian_objective = -global_loss
+                
+                # Initialize similarity constraint terms (not used in hard constraint mode, but for consistency)
+                sim_penalty = torch.tensor(0.0, device=self.device)
+                constraint_sim_violation = torch.tensor(0.0, device=self.device)
                 
                 # Compute constraint violations (for logging only)
                 # Use real distance calculation according to paper Constraint (4b)
@@ -2470,7 +2449,7 @@ class AttackerClient(Client):
                 d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
                 if d_T_val is not None:
                     dist_to_global, _ = self._compute_distance_update_space(
-                        proxy_param,
+                    proxy_param,
                         self.benign_updates
                     )
                     constraint_b_violation = F.relu(dist_to_global - d_T_val)
@@ -2478,14 +2457,6 @@ class AttackerClient(Client):
                     dist_to_global = torch.tensor(0.0, device=self.device)
                     constraint_b_violation = torch.tensor(0.0, device=self.device)
                 
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # OPTIMIZATION 6: Constraint (4c) calculation moved to after loop for hard constraint mode
-                # In hard constraint mode, constraint (4c) is only used for logging, not in optimization
-                # So we can delay its computation until after the loop
-                # constraint_c_violation = torch.tensor(0.0, device=self.device)
-                # constraint_c_value_for_update is already computed before loop (for Lagrangian mode compatibility)
-                constraint_c_violation = torch.tensor(0.0, device=self.device)  # Dummy value (constraint 4c disabled)
-                # ==========================================
             
             # ============================================================
             # CRITICAL: Compute gradients using torch.autograd.grad (NO backward())
@@ -2550,10 +2521,9 @@ class AttackerClient(Client):
             # ============================================================
             # Update Lagrangian multipliers (if using Lagrangian mechanism)
             # Use subgradient method according to paper dual problem
-            # Paper Algorithm 1 Step 7: Update λ(t) and ρ(t) according to eq:dual
+            # Paper Algorithm 1 Step 7: Update λ(t) according to eq:dual
             # ============================================================
-            # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_dt check =====
-            if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
+            if self.use_lagrangian_dual and self.lambda_dt is not None:
                 # Dual ascent method: λ(t+1) = λ(t) + α_λ × subgradient
                 # subgradient = (constraint value - bound)
                 # When constraint is violated (constraint value > bound), subgradient > 0, λ increases to penalize violation
@@ -2573,43 +2543,89 @@ class AttackerClient(Client):
                     # OPTIMIZATION 5: Keep multiplier on same device when updating
                     self.lambda_dt = torch.tensor(new_lambda, device=target_device, requires_grad=False)
                 
+                    # Update cosine similarity constraint multiplier
+                    if self.use_cosine_similarity_constraint and self.lambda_sim is not None:
+                        # Standard dual ascent update: λ_sim(t+1) = max(0, λ_sim(t) + α_λ_sim * g_sim)
+                        # where g_sim = attacker_sim - sim_upper_bound is the constraint violation (can be positive or negative)
+                        # - If constraint is violated (g_sim > 0, i.e., attacker_sim > sim_upper_bound): λ_sim increases to penalize violation
+                        # - If constraint is satisfied (g_sim <= 0, i.e., attacker_sim <= sim_upper_bound): λ_sim decreases (but clamped to ≥ 0)
+                        #   This allows the system to "relax" when constraint is well-satisfied
+                        # Note: Uses full g_sim (not F.relu(g_sim)) for consistency with λ_dt update logic
+                        lambda_sim_val = self.lambda_sim.item() if isinstance(self.lambda_sim, torch.Tensor) else self.lambda_sim
+                        # Use full g_sim (consistent with λ_dt update) - g_sim was computed above in constraint calculation
+                        # Since both checks require use_cosine_similarity_constraint and cached_benign_sim_stats, g_sim is available here
+                        g_sim_val = g_sim.item()  # Use full g_sim (can be negative), consistent with λ_dt
+                        new_lambda_sim = lambda_sim_val + self.lambda_sim_lr * g_sim_val
+                        new_lambda_sim = max(0.0, new_lambda_sim)  # Ensure non-negative
+                        self.lambda_sim = torch.tensor(new_lambda_sim, device=target_device, requires_grad=False)
+                
                     # Logging: Print every step for detailed monitoring
                     # Print more frequently for better visibility (every step or every 5 steps)
                     print_freq = 1 if self.proxy_steps <= 20 else 5  # Print every step if <=20 steps, else every 5 steps
                     if step % print_freq == 0 or step == 0 or step == self.proxy_steps - 1:
                         grad_norm = proxy_param.grad.norm().item() if proxy_param.grad is not None else 0.0
-                        print(f"      [Attacker {self.client_id}] Step {step}/{self.proxy_steps-1}: "
-                        f"dist={current_dist:.4f}, g={g_val:.4f}, lambda={lambda_val:.4f}, "
-                        f"loss={global_loss.item():.4f}, grad_norm={grad_norm:.4f}")
+                        log_msg = f"      [Attacker {self.client_id}] Step {step}/{self.proxy_steps-1}: " \
+                                  f"dist={current_dist:.4f}, g={g_val:.4f}, lambda={lambda_val:.4f}, " \
+                                  f"loss={global_loss.item():.4f}, grad_norm={grad_norm:.4f}"
+                        # Add similarity constraint info if enabled
+                        if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                            # Recompute attacker_sim for logging (or use cached value if available)
+                            attacker_sim_log = self._compute_cosine_similarity_to_aggregated(proxy_param, self.benign_updates).item()
+                            benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
+                            lambda_sim_val = self.lambda_sim.item() if self.lambda_sim is not None else 0.0
+                            log_msg += f", sim={attacker_sim_log:.4f}, sim_benign_mean={benign_sim_mean_val:.4f}, lambda_sim={lambda_sim_val:.4f}"
+                        print(log_msg)
                     
                     # ============================================================
-                    # Early stopping: Stop when constraint is satisfied and stable
+                    # Early stopping: Stop when ALL constraints are satisfied and stable
                     # ============================================================
-                    # Strategy: Stop after N consecutive steps satisfying constraint
+                    # Strategy: Stop after N consecutive steps satisfying ALL constraints
                     # This prevents premature stopping due to temporary fluctuations
                     # and avoids violating constraint after satisfying it (e.g., Attacker 8)
-                    if current_dist <= d_T_val_loop if d_T_val_loop is not None else False:
+                    
+                    # Check distance constraint
+                    dist_satisfied = current_dist <= d_T_val_loop if d_T_val_loop is not None else True
+                    
+                    # Check similarity constraint (if enabled)
+                    if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                        # Recompute attacker_sim for early stopping check (if not already computed in this iteration)
+                        # Note: attacker_sim should already be computed above in the constraint calculation section
+                        if 'attacker_sim' in locals():
+                            attacker_sim_val = attacker_sim.item()
+                        else:
+                            # Fallback: recompute if not available
+                            attacker_sim_val = self._compute_cosine_similarity_to_aggregated(
+                                proxy_param,
+                                self.benign_updates
+                            ).item()
+                        
+                        benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
+                        # Use sim_T if provided, otherwise use benign_sim_mean (as upper bound)
+                        sim_upper_bound_val = self.sim_T if self.sim_T is not None else benign_sim_mean_val
+                        sim_satisfied = attacker_sim_val <= sim_upper_bound_val
+                    else:
+                        sim_satisfied = True  # If similarity constraint not enabled, consider it satisfied
+                        attacker_sim_val = 0.0  # Dummy value for logging
+                        benign_sim_mean_val = 0.0  # Dummy value for logging
+                    
+                    # Both constraints satisfied
+                    all_constraints_satisfied = dist_satisfied and sim_satisfied
+                    
+                    if all_constraints_satisfied:
                         constraint_satisfied_steps += 1
                         if constraint_satisfied_steps >= constraint_stability_steps:
-                            print(f"    [Attacker {self.client_id}] Early stopping: dist={current_dist:.4f} <= d_T={d_T_val_loop:.4f} "
-                                  f"for {constraint_satisfied_steps} consecutive steps (step {step}/{self.proxy_steps-1})")
+                            log_msg = f"    [Attacker {self.client_id}] Early stopping: "
+                            log_msg += f"dist={current_dist:.4f} <= d_T={d_T_val_loop:.4f} "
+                            if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                                sim_upper_bound_log = self.sim_T if self.sim_T is not None else benign_sim_mean_val
+                                log_msg += f", sim={attacker_sim_val:.4f} <= sim_upper_bound={sim_upper_bound_log:.4f} "
+                            log_msg += f"for {constraint_satisfied_steps} consecutive steps (step {step}/{self.proxy_steps-1})"
+                            print(log_msg)
                             break
                     else:
-                        constraint_satisfied_steps = 0  # Reset counter when constraint is violated
+                        constraint_satisfied_steps = 0  # Reset counter when any constraint is violated
                     
                     prev_dist_val = current_dist
-                
-                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                    # if self.gamma is not None and len(self.benign_updates) > 0:
-                #     rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
-                #     # Subgradient: Σ(...) - Γ
-                #     # If constraint is violated (Σ(...) > Γ), subgradient > 0, ρ increases
-                #     subgradient_c = constraint_c_value_for_update - self.gamma
-                #     new_rho = rho_val + self.rho_lr * subgradient_c
-                #     new_rho = max(0.0, new_rho)  # Ensure non-negative
-                #     # OPTIMIZATION 5: Keep multiplier on same device when updating
-                #     self.rho_dt = torch.tensor(new_rho, device=target_device, requires_grad=False)
-                # ==========================================
             
             # ============================================================
             # Modification 4: Add constraint safeguard mechanism within optimization loop (Lagrangian framework)
@@ -2655,11 +2671,11 @@ class AttackerClient(Client):
                 # ============================================================
                 if self.enable_light_projection_in_loop:
                     dist_to_global_for_projection_tensor, _ = self._compute_distance_update_space(
-                        proxy_param,
+                    proxy_param,
                         self.benign_updates
-                    )
-                    dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
-                    
+                )
+                dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
+                
                     d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
                     violation_ratio = (dist_to_global_for_projection - d_T_val) / d_T_val if d_T_val > 0 else 0.0
                     
@@ -2667,7 +2683,7 @@ class AttackerClient(Client):
                         # Light projection to 1.5 × d_T, leaving margin to allow Lagrangian to continue optimizing
                         d_T_proj = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
                         target_dist = d_T_proj * 1.5
-                        scale_factor = target_dist / dist_to_global_for_projection
+                    scale_factor = target_dist / dist_to_global_for_projection
                         # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
                         with torch.no_grad():
                             proxy_param.mul_(scale_factor)
@@ -2789,76 +2805,22 @@ class AttackerClient(Client):
         final_aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update, self.benign_updates)
         final_global_loss = self._proxy_global_loss(final_aggregated_update, max_batches=self.proxy_max_batches_eval, skip_dim_check=True)
         
-        # Compute constraint (4c) for logging
-        # OPTIMIZATION 2 & 6: For Lagrangian mode, reuse cached value; for hard constraint mode, compute here
-        if self.use_lagrangian_dual and constraint_c_value_for_update > 0:
-            # Reuse cached value from before loop (already computed)
-            constraint_c_value = torch.tensor(constraint_c_value_for_update, device=self.device)
-        else:
-            # Hard constraint mode: compute here (only needed for logging)
-            # Use the same calculation as in Lagrangian mode for consistency
-            constraint_c_value = torch.tensor(0.0, device=self.device)
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # if self.gamma is not None and len(self.benign_updates) > 0:
-            if False:  # Temporarily disabled (constraint 4c is commented out, gamma is None)
-                # ===== CONSTRAINT (4c) COMMENTED OUT: All computation below is disabled =====
-                # Compute constraint (4c) value using weighted mean of ALL benign clients
-                # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean of ALL benign clients)
-                if len(self.benign_updates) > 0 and self.total_data_size is not None and len(self.benign_data_sizes) > 0:
-                    D_total = float(self.total_data_size)
-                    # Compute weighted mean of ALL benign clients
-                    benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
-                    benign_stack = torch.stack(benign_updates_gpu)
-                    weighted_mean = torch.zeros_like(benign_stack[0])
-                    for idx, benign_update in enumerate(self.benign_updates):
-                        if idx < len(self.benign_update_client_ids):
-                            client_id = self.benign_update_client_ids[idx]
-                            D_i = self.benign_data_sizes.get(client_id, 1.0)
-                            weight = D_i / D_total
-                        else:
-                            weight = 1.0 / len(self.benign_updates)
-                        weighted_mean = weighted_mean + weight * benign_update.to(self.device)
-                    
-                    # Compute distances d(w_i(t), w̄_i(t)) for all benign clients
-                    benign_gpu = [u.to(self.device) for u in self.benign_updates]
-                    distances = [torch.norm(benign_update - weighted_mean) for benign_update in benign_gpu]
-                    constraint_c_value = torch.stack(distances).sum()
-                    # Clean up GPU references
-                    del benign_updates_gpu, benign_stack, weighted_mean, benign_gpu, distances
-                else:
-                    # Fallback: use simple mean if data sizes not available
-                    benign_gpu = [u.to(self.device) for u in self.benign_updates]
-                    benign_stack_c = torch.stack(benign_gpu)
-                    benign_mean_c = benign_stack_c.mean(dim=0)
-                    distances = torch.norm(benign_stack_c - benign_mean_c, dim=1)
-                    constraint_c_value = distances.sum()
-                    # Clean up GPU references
-                    del benign_gpu, benign_stack_c, benign_mean_c, distances
-                torch.cuda.empty_cache()
-                # ==========================================
-        
         malicious_norm = torch.norm(malicious_update).item()
         log_msg = f"    [Attacker {self.client_id}] GRMP Attack: " \
                   f"F(w'_g)={final_global_loss.item():.4f}, " \
-                  f"||w'_j||={malicious_norm:.4f}, " \
-                  f"constraint_c={constraint_c_value.item():.4f}"
+                  f"||w'_j||={malicious_norm:.4f}"
         
         # If using the Lagrangian mechanism, display the multiplier value
-        # ===== CONSTRAINT (4c) COMMENTED OUT: Removed rho_dt check and rho display =====
-        if self.use_lagrangian_dual and self.lambda_dt is not None:  # Removed rho_dt check
+        if self.use_lagrangian_dual and self.lambda_dt is not None:
             lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
-            # ===== CONSTRAINT (4c) COMMENTED OUT =====
-            # rho_val = self.rho_dt.item() if isinstance(self.rho_dt, torch.Tensor) else self.rho_dt
-            # log_msg += f", λ={lambda_val:.4f}, ρ={rho_val:.4f}"
-            log_msg += f", λ={lambda_val:.4f} [Constraint 4c disabled]"
-            # ==========================================
+            log_msg += f", λ={lambda_val:.4f}"
         
         print(log_msg)
         
         # Move malicious_update to CPU before returning to free GPU memory
         malicious_update_cpu = malicious_update.cpu()
         # Clean up GPU references
-        del malicious_update, final_global_loss, constraint_c_value
+        del malicious_update, final_global_loss
         torch.cuda.empty_cache()
         
         return malicious_update_cpu.detach()

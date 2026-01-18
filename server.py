@@ -14,7 +14,7 @@ class Server:
     """Server class for federated learning with GRMP attack defense"""
     def __init__(self, global_model: nn.Module, test_loader,
                 enable_defense=True, defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2,
-                d_T=0.5, gamma=10.0,
+                d_T=0.5,
                 defense_high_rejection_threshold=0.4, defense_threshold_decay=0.9):
         self.global_model = copy.deepcopy(global_model)
         self.test_loader = test_loader
@@ -38,7 +38,7 @@ class Server:
         
         # Formula 4 constraint parameters (passed to attackers)
         self.d_T = d_T  # Distance threshold for constraint (4b)
-        self.gamma = gamma  # Upper bound for constraint (4c)
+        self.sim_T = None  # Cosine similarity threshold (will be set from config if provided)
         
         # Adaptive defense parameters
         self.defense_high_rejection_threshold = defense_high_rejection_threshold  # High rejection rate threshold
@@ -526,19 +526,13 @@ class Server:
         for client in self.clients:
             if isinstance(client, AttackerClient):
                 client.set_global_model_params(global_params)
-                # Set constraint parameters: d_T, gamma, total_data_size, and benign_data_sizes
+                # Set constraint parameters: d_T, total_data_size, and benign_data_sizes
                 # d_T: distance threshold for proximity constraint (4b)
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # gamma: upper bound for aggregation distance constraint (4c)
-                # ==========================================
                 # total_data_size: D(t) for Formula (2) and (3)
                 # benign_data_sizes: {client_id: D_i(t)} for Formula (2) and (3)
                 client.set_constraint_params(
-                    d_T=self.d_T, 
-                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                    # gamma=self.gamma,
-                    gamma=None,  # Temporarily disabled (constraint 4c is commented out)
-                    # ==========================================
+                    d_T=self.d_T,
+                    sim_T=self.sim_T,
                     total_data_size=total_data_size,
                     benign_data_sizes=benign_data_sizes
                 )

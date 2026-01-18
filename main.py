@@ -146,13 +146,11 @@ def setup_experiment(config):
         server_lr=config['server_lr'],
         tolerance_factor=config['tolerance_factor'],
         d_T=config['d_T'],
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # gamma=config['gamma'],
-        gamma=None,  # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
         defense_high_rejection_threshold=config['defense_high_rejection_threshold'],
         defense_threshold_decay=config['defense_threshold_decay']
     )
+    # Set sim_T from config (cosine similarity threshold)
+    server.sim_T = config.get('sim_T', None)
 
     # 6. Create Clients
     print("\nCreating federated learning clients...")
@@ -233,22 +231,16 @@ def setup_experiment(config):
                 client.set_lagrangian_params(
                     use_lagrangian_dual=config['use_lagrangian_dual'],
                     lambda_init=config.get('lambda_init', 0.1),
-                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                    # rho_init=config.get('rho_init', 0.1),
-                    # ==========================================
                     lambda_lr=config.get('lambda_lr', 0.01),
-                    # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                    # rho_lr=config.get('rho_lr', 0.01),
-                    # ==========================================
                     enable_final_projection=config.get('enable_final_projection', True),
-                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True)
+                    enable_light_projection_in_loop=config.get('enable_light_projection_in_loop', True),
+                    use_cosine_similarity_constraint=config.get('use_cosine_similarity_constraint', False),
+                    lambda_sim_init=config.get('lambda_sim_init', 0.1),
+                    lambda_sim_lr=config.get('lambda_sim_lr', 0.01)
                 )
                 final_proj_status = "enabled" if config.get('enable_final_projection', True) else "disabled"
                 light_proj_status = "enabled" if config.get('enable_light_projection_in_loop', True) else "disabled"
-                # ===== CONSTRAINT (4c) COMMENTED OUT =====
-                # print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, ρ(1)={config.get('rho_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status}")
-                print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status} [Constraint 4c disabled]")
-                # ==========================================
+                print(f"    Lagrangian Dual enabled: λ(1)={config.get('lambda_init', 0.1)}, final projection={final_proj_status}, light projection in loop={light_proj_status}")
             else:
                 print(f"    Using hard constraint projection (Lagrangian Dual disabled)")
 
@@ -652,9 +644,9 @@ def main():
         'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
         # ========== Data Distribution ==========
-        'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
+        'dirichlet_alpha': 1.0,  # Make data less extreme non-IID (higher alpha = more balanced)
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         # 'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
@@ -675,17 +667,11 @@ def main():
         
         # ========== Formula 4 Constraint Parameters ==========
         'd_T': 2.0,  # Base distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ d_T
-        # ===== CONSTRAINT (4c) COMMENTED OUT =====
-        # 'gamma': 5.0,  # Upper bound for constraint (4c): Σ β'_{i,j}(t) d(w_i(t), w̄_i(t)) ≤ Γ
-        'gamma': None,  # Temporarily disabled (constraint 4c is commented out)
-        # ==========================================
+        'sim_T': None,  # Cosine similarity upper bound: cos(Δ_att, Δ_g) ≤ sim_T (None = use benign mean similarity)
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-            # - Full fine-tuning: ~67M parameters, dim_reduction_size=10000 is fine
-            # - LoRA (r=16): ~0.5-1M parameters, dim_reduction_size will be auto-adjusted if > LoRA params
-            # Auto-adjustment: If dim_reduction_size > actual LoRA params, it will be set to 80% of LoRA params
         'dim_reduction_size': 10000,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
@@ -694,8 +680,8 @@ def main():
         'vgae_dropout': 0.0,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.02,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 150,  # Number of optimization steps for attack objective (int)
+        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 2.0,  # Gradient clipping norm for training stability (float)
@@ -708,11 +694,12 @@ def main():
         'enable_final_projection': False,  # Whether to apply final projection after optimization (bool, True/False)
         
         # Lagrangian multiplier parameters
-        'lambda_init': 1000,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
+        'lambda_init': 100,  # Initial λ(t) value for constraint (4b): d(w'_j, w'_g) ≤ d_T
         'lambda_lr': 1.0,    # Learning rate for λ(t) update (dual ascent step size)
-        # Constraint (4c) parameters - DISABLED
-        # 'rho_init': 0.1,   # Initial ρ(t) value (constraint 4c commented out in code)
-        # 'rho_lr': 0.1,     # Learning rate for ρ(t) update (constraint 4c commented out in code)
+        # ========== Cosine Similarity Constraint Parameters ==========
+        'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraint (bool, True/False)
+        'lambda_sim_init': 100,  # Initial λ_sim(t) value for cosine similarity constraint: attacker_sim >= benign_sim_mean
+        'lambda_sim_lr': 1.0,  # Learning rate for λ_sim(t) update (dual ascent step size, typically same as lambda_lr)
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
