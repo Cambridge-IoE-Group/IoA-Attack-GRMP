@@ -249,7 +249,8 @@ class AttackerClient(Client):
                  grad_clip_norm=1.0,
                  early_stop_constraint_stability_steps=3,
                  use_distance_prediction=True,
-                 distance_prediction_alpha=0.3):
+                 distance_prediction_alpha=0.3,
+                 d_T_multiplier=1.0):
         """
         Initialize an attacker client with VGAE-based camouflage capabilities.
         
@@ -307,6 +308,7 @@ class AttackerClient(Client):
         self.benign_distance_history = []  # Store historical benign client distances
         self.use_distance_prediction = use_distance_prediction  # Whether to use distance prediction for dynamic d_T
         self.distance_prediction_alpha = distance_prediction_alpha  # EMA decay factor for distance prediction
+        self.d_T_multiplier = d_T_multiplier  # Multiplier for dynamic d_T calculation (default: 1.0, means directly use predicted distance without amplification)
         # ================================================================================
 
         dummy_loader = data_manager.get_empty_loader()
@@ -536,13 +538,12 @@ class AttackerClient(Client):
         predicted_benign_dist = self.predict_benign_distance()
         
         # Dynamic d_T = max(predicted_distance * multiplier, d_T_min)
-        # Remove base_d_T restriction to allow distance prediction mechanism full freedom
-        # Constants: multiplier=1.2, d_T_min=1.0 (hardcoded for simplicity)
-        d_T_multiplier = 1.2
-        d_T_min = 1.0
+        # Default multiplier=1.0 means directly use predicted distance without amplification
+        # This is more theoretically sound: if prediction is accurate, use it directly
+        d_T_min = 1.0  # Minimum protection
         
         dynamic_d_T = max(
-            predicted_benign_dist * d_T_multiplier,
+            predicted_benign_dist * self.d_T_multiplier,  # Default 1.0 = no amplification
             d_T_min  # Only use d_T_min as minimum protection
         )
         
@@ -2368,9 +2369,10 @@ class AttackerClient(Client):
             else:
                 self.d_T = dynamic_d_T
             
+            multiplier_str = f"multiplier={self.d_T_multiplier:.2f}" if self.d_T_multiplier != 1.0 else "no multiplier (direct use)"
             print(f"    [Attacker {self.client_id}] Distance prediction: predicted_benign_dist={predicted_benign_dist:.4f}, "
                   f"dynamic_d_T={dynamic_d_T:.4f} (history_len={len(self.benign_distance_history)}, "
-                  f"configured_d_T={configured_d_T:.2f}, multiplier=1.2)")
+                  f"configured_d_T={configured_d_T:.2f}, {multiplier_str})")
         
         # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
         # Constraint (4c): DISABLED (commented out in code)
