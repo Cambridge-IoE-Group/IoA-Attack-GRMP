@@ -347,8 +347,6 @@ class AttackerClient(Client):
         self.lambda_sim_lr = 0.01  # Learning rate for λ_sim(t) update
         self.lambda_sim_init_value = None  # Save initial λ_sim value for reset in prepare_for_round
         
-        # Track violation history for adaptive λ initialization (Optimization)
-        self.last_violation = None  # Last round's constraint violation value (distance, not violation amount)
         
         # Get model parameter count (works on CPU model)
         self._flat_numel = int(self.model.get_flat_params().numel())  # Convert to Python int
@@ -409,33 +407,16 @@ class AttackerClient(Client):
 
         # Note: d_T is used only as fallback when distance prediction is disabled or no history
 
-        # Modification 1: Reset Lagrangian multipliers (with adaptive initialization based on history)
+        # Modification 1: Reset Lagrangian multipliers at the start of each round
         # Reason: Prevent λ from accumulating across rounds, which causes numerical instability and optimization imbalance
-        # Optimization: Use adaptive λ initialization based on previous round's violation to provide better starting point
         
         # Reset cosine similarity constraint multiplier
         if self.use_cosine_similarity_constraint and self.lambda_sim_init_value is not None:
             self.lambda_sim = torch.tensor(self.lambda_sim_init_value, requires_grad=False)
         
+        # Reset distance constraint multiplier (consistent with lambda_sim reset mechanism)
         if self.use_lagrangian_dual and self.lambda_init_value is not None:
-            # Adaptive λ initialization: if last round had large violation, use larger initial λ
-            d_T_init = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T if self.d_T is not None else None
-            if self.last_violation is not None and d_T_init is not None and self.last_violation > d_T_init * 1.5:
-                # Estimate required λ based on violation magnitude and optimization steps
-                # Target: λ should be large enough to suppress violation in proxy_steps iterations
-                # Rough estimate: λ_needed ≈ violation / (lambda_lr * proxy_steps)
-                estimated_lambda = self.last_violation / (self.lambda_lr * self.proxy_steps)
-                # Use conservative estimate (50% of calculated value) to avoid over-penalization
-                adaptive_lambda_init = max(self.lambda_init_value, estimated_lambda * 0.5)
-                # Cap at reasonable maximum (10× initial value) to prevent excessive values
-                adaptive_lambda_init = min(adaptive_lambda_init, self.lambda_init_value * 10.0)
-                self.lambda_dt = torch.tensor(adaptive_lambda_init, requires_grad=False)
-                if adaptive_lambda_init > self.lambda_init_value * 1.5:
-                    print(f"    [Attacker {self.client_id}] Adaptive λ init: {adaptive_lambda_init:.4f} "
-                          f"(based on last violation: {self.last_violation:.4f})")
-            else:
-                self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
-            # ==========================================
+            self.lambda_dt = torch.tensor(self.lambda_init_value, requires_grad=False)
 
     def receive_benign_updates(self, updates: List[torch.Tensor], client_ids: Optional[List[int]] = None):
         """
@@ -529,7 +510,7 @@ class AttackerClient(Client):
         torch.cuda.empty_cache()
         
         # Always return all benign updates
-            return self.benign_updates
+        return self.benign_updates
     
     def _get_selected_benign_indices(self) -> List[int]:
         """
@@ -568,7 +549,7 @@ class AttackerClient(Client):
         torch.cuda.empty_cache()
         
         # Always return all indices
-            return list(range(len(self.benign_updates)))
+        return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
         """
@@ -1023,8 +1004,8 @@ class AttackerClient(Client):
             # For full fine-tuning mode, prepare param_dict (LoRA mode doesn't need this)
             param_dict = {}
             if not use_lora:
-            # Skip dimension check if already validated (performance optimization)
-            param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
+                # Skip dimension check if already validated (performance optimization)
+                param_dict = self._flat_to_param_dict(candidate_params, skip_dim_check=skip_dim_check)
 
             # CRITICAL FIX: Ensure all parameters in param_dict are on the correct device
             # Normalize device: always use 'cuda:0' for consistency  
@@ -1439,7 +1420,7 @@ class AttackerClient(Client):
             
             if input_numel == self._flat_numel:
                 # Already LoRA-only flat, use directly
-        self.global_model_params = global_params.clone().detach().to(self.device)
+                self.global_model_params = global_params.clone().detach().to(self.device)
             else:
                 # Full-model flat: Extract LoRA parameters in same order as get_flat_params()
                 # CRITICAL: Must match get_flat_params() order exactly
@@ -2286,7 +2267,7 @@ class AttackerClient(Client):
                 self.benign_updates,
                 proxy_param
             )
-            else:
+        else:
             cached_benign_sim_stats = None
         
         # Early stopping variables: track constraint satisfaction stability
@@ -2671,11 +2652,11 @@ class AttackerClient(Client):
                 # ============================================================
                 if self.enable_light_projection_in_loop:
                     dist_to_global_for_projection_tensor, _ = self._compute_distance_update_space(
-                    proxy_param,
+                        proxy_param,
                         self.benign_updates
-                )
-                dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
-                
+                    )
+                    dist_to_global_for_projection = dist_to_global_for_projection_tensor.item()
+                    
                     d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
                     violation_ratio = (dist_to_global_for_projection - d_T_val) / d_T_val if d_T_val > 0 else 0.0
                     
@@ -2683,7 +2664,7 @@ class AttackerClient(Client):
                         # Light projection to 1.5 × d_T, leaving margin to allow Lagrangian to continue optimizing
                         d_T_proj = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
                         target_dist = d_T_proj * 1.5
-                    scale_factor = target_dist / dist_to_global_for_projection
+                        scale_factor = target_dist / dist_to_global_for_projection
                         # CRITICAL: Use no_grad() + in-place op to avoid breaking gradients
                         with torch.no_grad():
                             proxy_param.mul_(scale_factor)
@@ -2749,9 +2730,6 @@ class AttackerClient(Client):
                 d_T_val = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
                 constraint_violation = max(0, dist_to_global - d_T_val)
                 violation_ratio = constraint_violation / d_T_val if d_T_val > 0 else 0.0
-                
-                # Store violation for adaptive initialization in next round (Optimization)
-                self.last_violation = dist_to_global
                 
                 if constraint_violation > 0:
                     lambda_val = self.lambda_dt.item() if isinstance(self.lambda_dt, torch.Tensor) else self.lambda_dt
