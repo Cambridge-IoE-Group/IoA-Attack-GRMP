@@ -621,20 +621,6 @@ class Server:
         sorted_client_ids = sorted(final_updates.keys())
         final_update_list = [final_updates[cid] for cid in sorted_client_ids]
         
-        # ===== NEW: Compute benign client distances and pass to attackers for next round =====
-        # This allows attackers to learn and adapt to the distance decreasing pattern
-        if len(benign_updates) > 0 and len(benign_client_ids) > 0:
-            # Compute distances for benign clients only (for tracking)
-            benign_only_updates = [final_updates[cid] for cid in benign_client_ids]
-            benign_distances = self._compute_euclidean_distances(benign_only_updates, benign_client_ids)
-            
-            # Pass benign distances to attackers for next round
-            for client_id in sorted_client_ids:
-                client = self.clients[client_id]
-                if getattr(client, 'is_attacker', False) and hasattr(client, 'receive_benign_distances'):
-                    client.receive_benign_distances(benign_distances.tolist())
-        # ========================================================================================
-        
         defense_log = self.aggregate_updates(final_update_list, sorted_client_ids)
 
         # Evaluate the global model

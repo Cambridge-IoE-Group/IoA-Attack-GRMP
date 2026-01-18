@@ -225,10 +225,7 @@ def setup_experiment(config):
                 gsp_perturbation_scale=config['gsp_perturbation_scale'],
                 opt_init_perturbation_scale=config['opt_init_perturbation_scale'],
                 grad_clip_norm=config['grad_clip_norm'],
-                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3),
-                use_distance_prediction=config.get('use_distance_prediction', True),
-                distance_prediction_alpha=config.get('distance_prediction_alpha', 0.3),
-                d_T_multiplier=config.get('d_T_multiplier', 1.0)
+                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3)
             )
             
             # Set Lagrangian Dual parameters (if using)
@@ -704,10 +701,6 @@ def main():
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
-        'use_distance_prediction': True,  # Whether attackers learn benign distance trend and use it for dynamic d_T (bool)
-        'distance_prediction_alpha': 0.3,  # EMA decay factor for distance prediction (float, 0.0-1.0)
-                                         # Lower alpha = more weight on recent distances, higher alpha = more weight on history
-        'd_T_multiplier': 1.0,  # Multiplier for dynamic d_T calculation (float, >= 1.0). Default 1.0 means directly use predicted benign distance without amplification.
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)

@@ -247,10 +247,7 @@ class AttackerClient(Client):
                  gsp_perturbation_scale=0.01,
                  opt_init_perturbation_scale=0.001,
                  grad_clip_norm=1.0,
-                 early_stop_constraint_stability_steps=3,
-                 use_distance_prediction=True,
-                 distance_prediction_alpha=0.3,
-                 d_T_multiplier=1.0):
+                 early_stop_constraint_stability_steps=3):
         """
         Initialize an attacker client with VGAE-based camouflage capabilities.
         
@@ -303,13 +300,6 @@ class AttackerClient(Client):
         self.opt_init_perturbation_scale = opt_init_perturbation_scale
         self.grad_clip_norm = grad_clip_norm
         self.early_stop_constraint_stability_steps = early_stop_constraint_stability_steps
-        
-        # ===== NEW: Track benign client distance history for learning distance trend =====
-        self.benign_distance_history = []  # Store historical benign client distances
-        self.use_distance_prediction = use_distance_prediction  # Whether to use distance prediction for dynamic d_T
-        self.distance_prediction_alpha = distance_prediction_alpha  # EMA decay factor for distance prediction
-        self.d_T_multiplier = d_T_multiplier  # Multiplier for dynamic d_T calculation (default: 1.0, means directly use predicted distance without amplification)
-        # ================================================================================
 
         dummy_loader = data_manager.get_empty_loader()
         super().__init__(client_id, model, dummy_loader, lr, local_epochs, alpha)
@@ -467,87 +457,6 @@ class AttackerClient(Client):
             # Fallback: use indices as client IDs (for backward compatibility)
             # Note: This may not be accurate, but allows code to work without server changes
             self.benign_update_client_ids = list(range(len(updates)))
-    
-    def receive_benign_distances(self, benign_distances: List[float]):
-        """
-        Receive benign client distances from server (for learning distance trend).
-        
-        This allows attackers to track and learn the distance decreasing pattern
-        of benign clients, enabling dynamic adaptation of d_T.
-        
-        Args:
-            benign_distances: List of benign client distances from current round
-        """
-        if benign_distances:
-            mean_benign_dist = sum(benign_distances) / len(benign_distances)
-            self.benign_distance_history.append(mean_benign_dist)
-            # Keep only recent history (last 50 rounds) to avoid memory issues
-            if len(self.benign_distance_history) > 50:
-                self.benign_distance_history = self.benign_distance_history[-50:]
-    
-    def predict_benign_distance(self) -> float:
-        """
-        Predict next round's benign client distance using Exponential Moving Average (EMA).
-        
-        This helps attackers anticipate the distance trend and adapt accordingly.
-        
-        Returns:
-            Predicted benign client distance for next round
-        """
-        if len(self.benign_distance_history) == 0:
-            # No history: return self.d_T (configured value) or reasonable default
-            if self.d_T is not None:
-                return float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
-            else:
-                # Final fallback: use a reasonable default (should not reach here in normal operation)
-                # This is a safety fallback only
-                return 2.0
-        
-        if len(self.benign_distance_history) == 1:
-            # Only one value: return it
-            return self.benign_distance_history[0]
-        
-        # Exponential Moving Average (EMA)
-        alpha = self.distance_prediction_alpha
-        predicted = self.benign_distance_history[0]
-        for dist in self.benign_distance_history[1:]:
-            predicted = alpha * dist + (1 - alpha) * predicted
-        
-        return predicted
-    
-    def get_dynamic_d_T(self) -> float:
-        """
-        Get dynamic d_T based on predicted benign client distance.
-        
-        This allows attackers to adapt d_T to match the decreasing trend
-        of benign client distances, making optimization more effective.
-        
-        Returns:
-            Dynamic d_T value based on predicted benign distance
-        """
-        if not self.use_distance_prediction or len(self.benign_distance_history) == 0:
-            # Fallback: use self.d_T (configured value) when distance prediction is disabled or no history
-            # This is the only place where pre-configured d_T is actually used
-            if self.d_T is not None:
-                return float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
-            else:
-                # Final fallback: use a reasonable default (should not reach here in normal operation)
-                # This is a safety fallback only
-                return 2.0
-        
-        predicted_benign_dist = self.predict_benign_distance()
-        
-        # Dynamic d_T = max(predicted_distance * multiplier, d_T_min)
-        # Default multiplier=1.0 means directly use predicted distance without amplification
-        # This is more theoretically sound: if prediction is accurate, use it directly
-        d_T_min = 1.0  # Minimum protection
-        
-        dynamic_d_T = max(
-            predicted_benign_dist * self.d_T_multiplier,  # Default 1.0 = no amplification
-            d_T_min  # Only use d_T_min as minimum protection
-        )
-        
-        return dynamic_d_T
     
     def receive_attacker_updates(self, updates: List[torch.Tensor], client_ids: List[int], data_sizes: Dict[int, float] = None):
         """
@@ -2348,31 +2257,6 @@ class AttackerClient(Client):
         # Store use_lora for use in optimization loop
         self._use_lora_in_optimization = use_lora
         # ===================================================================
-        
-        # ============================================================
-        # Distance prediction d_T calculation (if enabled)
-        # ============================================================
-        # Use distance prediction for dynamic d_T if enabled
-        if self.use_distance_prediction:
-            # Store configured d_T before dynamic update (for display)
-            # This is the fallback value that would be used if prediction were disabled
-            if self.d_T is not None:
-                configured_d_T = float(self.d_T) if isinstance(self.d_T, torch.Tensor) else self.d_T
-            else:
-                configured_d_T = 2.0  # Safety fallback (should not reach here)
-            
-            predicted_benign_dist = self.predict_benign_distance()
-            dynamic_d_T = self.get_dynamic_d_T()
-            # Update d_T to dynamic value
-            if isinstance(self.d_T, torch.Tensor):
-                self.d_T = torch.tensor(dynamic_d_T, device=self.d_T.device, dtype=self.d_T.dtype)
-            else:
-                self.d_T = dynamic_d_T
-            
-            multiplier_str = f"multiplier={self.d_T_multiplier:.2f}" if self.d_T_multiplier != 1.0 else "no multiplier (direct use)"
-            print(f"    [Attacker {self.client_id}] Distance prediction: predicted_benign_dist={predicted_benign_dist:.4f}, "
-                  f"dynamic_d_T={dynamic_d_T:.4f} (history_len={len(self.benign_distance_history)}, "
-                  f"configured_d_T={configured_d_T:.2f}, {multiplier_str})")
         
         # OPTIMIZATION 2: Cache constraint (4c) value before optimization loop
         # Constraint (4c): DISABLED (commented out in code)
