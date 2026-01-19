@@ -1548,7 +1548,33 @@ class AttackerClient(Client):
                                    benign_updates: List[torch.Tensor] = None,
                                    benign_updates_gpu: List[torch.Tensor] = None,
                                    other_attacker_updates_list: List[torch.Tensor] = None,
-                                   other_attacker_updates_gpu: List[torch.Tensor] = None) -> Tuple[torch.Tensor, float, List[float]]:
+                                   other_attacker_updates_gpu: List[torch.Tensor] = None,
+                                   other_attacker_updates: List[torch.Tensor] = None) -> Tuple[torch.Tensor, float, List[float]]:
+        # #region agent log
+        import json
+        try:
+            with open('/Users/hanlincai/Desktop/Github/IoA-Attack-GRMP/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "id": f"log_{int(__import__('time').time())}_{id(self)}",
+                    "timestamp": int(__import__('time').time() * 1000),
+                    "location": "client.py:1552",
+                    "message": "_aggregate_update_no_beta called",
+                    "data": {
+                        "client_id": getattr(self, 'client_id', None),
+                        "has_other_attacker_updates": other_attacker_updates is not None,
+                        "has_other_attacker_updates_list": other_attacker_updates_list is not None,
+                        "has_other_attacker_updates_gpu": other_attacker_updates_gpu is not None
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A"
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except: pass
+        # #endregion
+        # Handle legacy parameter name: other_attacker_updates -> other_attacker_updates_list
+        if other_attacker_updates is not None and other_attacker_updates_list is None:
+            other_attacker_updates_list = other_attacker_updates
         """
         FedAvg-style aggregated update (NO beta selection).
         
@@ -2633,6 +2659,18 @@ class AttackerClient(Client):
         # Store effective dist_bound for use in final constraint check
         self._effective_dist_bound = dist_bound_val
         
+        # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
+        # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
+        # Compute this BEFORE initial state printing so we can include similarity info
+        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
+            # Use initial proxy_param to compute reference statistics
+            cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
+                self.benign_updates,
+                proxy_param.detach()
+            )
+        else:
+            cached_benign_sim_stats = None
+        
         # Print initial state with dist_bound value (whether manual or auto-computed)
         if dist_bound_val is not None:
             try:
@@ -2654,26 +2692,51 @@ class AttackerClient(Client):
                         benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
                         other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
                     ).item()
+                    
+                    # Compute initial similarity metrics if similarity constraint is enabled
+                    initial_sim_info = ""
+                    if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                        # Compute initial similarity to FINAL AGGREGATION (consistent with optimization loop)
+                        proxy_param_flat = proxy_param.detach().view(-1)
+                        initial_global_ref_flat = initial_global_ref_gpu.view(-1)
+                        initial_sim_att_to_global = torch.cosine_similarity(
+                            proxy_param_flat.unsqueeze(0),
+                            initial_global_ref_flat.unsqueeze(0),
+                            dim=1
+                        ).squeeze(0).item()
+                        
+                        # Compute similarity bounds (consistent with optimization loop)
+                        benign_sim_mean = cached_benign_sim_stats['mean']
+                        benign_sim_std = cached_benign_sim_stats['std']
+                        if self.sim_center is not None:
+                            sim_center = torch.tensor(self.sim_center, device=initial_global_ref_gpu.device, dtype=initial_global_ref_gpu.dtype)
+                            initial_sim_bound_low = torch.clamp(sim_center - 2.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                            initial_sim_bound_up = torch.clamp(sim_center + 2.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                        else:
+                            initial_sim_bound_low = torch.clamp(benign_sim_mean - 2.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                            initial_sim_bound_up = torch.clamp(benign_sim_mean + 2.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                        
+                        # Compute constraint violations
+                        initial_g_sim_low = initial_sim_bound_low - initial_sim_att_to_global
+                        initial_g_sim_up = initial_sim_att_to_global - initial_sim_bound_up
+                        
+                        # Get initial lambda values
+                        initial_lambda_sim_low = self.lambda_sim_low.item() if isinstance(self.lambda_sim_low, torch.Tensor) else self.lambda_sim_low if self.lambda_sim_low is not None else 0.0
+                        initial_lambda_sim_up = self.lambda_sim_up.item() if isinstance(self.lambda_sim_up, torch.Tensor) else self.lambda_sim_up if self.lambda_sim_up is not None else 0.0
+                        
+                        initial_sim_info = f", initial_sim={initial_sim_att_to_global:.4f}∈[{initial_sim_bound_low:.4f},{initial_sim_bound_up:.4f}], " \
+                                          f"g_sim_low={initial_g_sim_low:.4f}, g_sim_up={initial_g_sim_up:.4f}, " \
+                                          f"lambda_sim_low={initial_lambda_sim_low:.4f}, lambda_sim_up={initial_lambda_sim_up:.4f}"
+                    
                 dist_bound_info = f"dist_bound={dist_bound_val:.4f} ({dist_bound_source})" if dist_bound_source != "none" else "dist_bound=None"
                 print(f"    [Attacker {self.client_id}] Starting optimization (UPDATE space): "
                       f"initial_dist={initial_dist:.4f}, {dist_bound_info}, g_dist={initial_g_dist:.4f}, "
-                      f"lambda_dist={initial_lambda_dist:.4f}, loss={initial_loss:.4f}, steps={self.proxy_steps}")
+                      f"lambda_dist={initial_lambda_dist:.4f}, loss={initial_loss:.4f}{initial_sim_info}, steps={self.proxy_steps}")
             except Exception as e:
                 print(f"    [Attacker {self.client_id}] ERROR computing initial state: {e}")
                 import traceback
                 traceback.print_exc()
                 raise
-        
-        # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
-        # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
-        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
-            # Use initial proxy_param to compute reference statistics
-            cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
-                self.benign_updates,
-                proxy_param.detach()
-            )
-        else:
-            cached_benign_sim_stats = None
         
         # Early stopping variables: track constraint satisfaction stability
         constraint_satisfied_steps = 0
@@ -2978,71 +3041,71 @@ class AttackerClient(Client):
                     
                 # Logging: Print every step with multiplier values (before and after update)
                 # Track all multipliers and constraint values
-                grad_norm = proxy_param.grad.norm().item() if proxy_param.grad is not None else 0.0
-                log_msg = f"      [Attacker {self.client_id}] Step {step}/{self.proxy_steps-1}: " \
+                        grad_norm = proxy_param.grad.norm().item() if proxy_param.grad is not None else 0.0
+                        log_msg = f"      [Attacker {self.client_id}] Step {step}/{self.proxy_steps-1}: " \
                           f"dist_att={dist_att_val:.4f}, g_dist={g_dist_val:.4f}, " \
                           f"λ_dist({lambda_dist_val:.4f}→{new_lambda_dist:.4f}), " \
-                          f"loss={global_loss.item():.4f}, grad_norm={grad_norm:.4f}"
+                                  f"loss={global_loss.item():.4f}, grad_norm={grad_norm:.4f}"
                 
-                # Add similarity constraint info if enabled
-                if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
-                    # Use sim_att_to_global computed above (no need to recompute)
-                    sim_att_log = sim_att_to_global.item()
-                    benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
-                    benign_sim_std_val = cached_benign_sim_stats['std'].item()
+                        # Add similarity constraint info if enabled
+                        if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                            # Use sim_att_to_global computed above (no need to recompute)
+                            sim_att_log = sim_att_to_global.item()
+                            benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
+                            benign_sim_std_val = cached_benign_sim_stats['std'].item()
+                            
+                            # Recompute bounds for logging (consistent with constraint calculation above)
+                            # Always use mean ± 2*std mode (more stable than min/max, avoids outlier issues)
+                            if self.sim_center is not None:
+                                sim_center_log = self.sim_center
+                                sim_bound_low_log = max(-1.0, min(1.0, sim_center_log - 2.0 * benign_sim_std_val))
+                                sim_bound_up_log = max(-1.0, min(1.0, sim_center_log + 2.0 * benign_sim_std_val))
+                            else:
+                                # Use mean ± 2*std (statistically robust, covers ~97.5% of benign clients, less affected by outliers)
+                                sim_bound_low_log = max(-1.0, min(1.0, benign_sim_mean_val - 2.0 * benign_sim_std_val))
+                                sim_bound_up_log = max(-1.0, min(1.0, benign_sim_mean_val + 2.0 * benign_sim_std_val))
+                            
+                            log_msg += f", sim_att={sim_att_log:.4f}∈[{sim_bound_low_log:.4f},{sim_bound_up_log:.4f}], " \
+                                       f"λ_sim_low({lambda_sim_low_val:.4f}→{new_lambda_sim_low:.4f}), " \
+                                       f"λ_sim_up({lambda_sim_up_val:.4f}→{new_lambda_sim_up:.4f}), " \
+                                       f"g_low={g_sim_low_val:.4f}, g_up={g_sim_up_val:.4f}"
+                            print(log_msg)
                     
-                    # Recompute bounds for logging (consistent with constraint calculation above)
-                    # Always use mean ± 2*std mode (more stable than min/max, avoids outlier issues)
-                    if self.sim_center is not None:
-                        sim_center_log = self.sim_center
-                        sim_bound_low_log = max(-1.0, min(1.0, sim_center_log - 2.0 * benign_sim_std_val))
-                        sim_bound_up_log = max(-1.0, min(1.0, sim_center_log + 2.0 * benign_sim_std_val))
+                    # ============================================================
+                    # Early stopping: Stop when ALL constraints are satisfied and stable
+                    # ============================================================
+                    # Strategy: Stop after N consecutive steps satisfying ALL constraints
+                    # This prevents premature stopping due to temporary fluctuations
+                    # and avoids violating constraint after satisfying it (e.g., Attacker 8)
+                    
+                    # Check distance constraint
+                    dist_satisfied = dist_att_val <= dist_bound_val if dist_bound_val is not None else True
+                    
+                    # Check similarity constraints (TWO-SIDED: both lower and upper bounds)
+                    if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
+                        # Use sim_att_to_global computed above in the constraint calculation
+                        sim_att_val = sim_att_to_global.item()
+                        
+                        benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
+                        benign_sim_std_val = cached_benign_sim_stats['std'].item()
+                        
+                        # Two-sided constraint: sim_bound_low <= sim_att <= sim_bound_up
+                        # Always use mean ± 2*std mode (more stable than min/max, avoids outlier issues)
+                        if self.sim_center is not None:
+                            sim_center_val = self.sim_center
+                            sim_bound_low_val = max(-1.0, min(1.0, sim_center_val - 2.0 * benign_sim_std_val))
+                            sim_bound_up_val = max(-1.0, min(1.0, sim_center_val + 2.0 * benign_sim_std_val))
+                        else:
+                            # Use mean ± 2*std (statistically robust, covers ~97.5% of benign clients, less affected by outliers)
+                            sim_bound_low_val = max(-1.0, min(1.0, benign_sim_mean_val - 2.0 * benign_sim_std_val))
+                            sim_bound_up_val = max(-1.0, min(1.0, benign_sim_mean_val + 2.0 * benign_sim_std_val))
+                        
+                        # Constraint satisfied when sim_att is within bounds
+                        sim_satisfied = (sim_att_val >= sim_bound_low_val) and (sim_att_val <= sim_bound_up_val)
                     else:
-                        # Use mean ± 2*std (statistically robust, covers ~97.5% of benign clients, less affected by outliers)
-                        sim_bound_low_log = max(-1.0, min(1.0, benign_sim_mean_val - 2.0 * benign_sim_std_val))
-                        sim_bound_up_log = max(-1.0, min(1.0, benign_sim_mean_val + 2.0 * benign_sim_std_val))
-                    
-                    log_msg += f", sim_att={sim_att_log:.4f}∈[{sim_bound_low_log:.4f},{sim_bound_up_log:.4f}], " \
-                               f"λ_sim_low({lambda_sim_low_val:.4f}→{new_lambda_sim_low:.4f}), " \
-                               f"λ_sim_up({lambda_sim_up_val:.4f}→{new_lambda_sim_up:.4f}), " \
-                               f"g_low={g_sim_low_val:.4f}, g_up={g_sim_up_val:.4f}"
-                print(log_msg)
-                
-                # ============================================================
-                # Early stopping: Stop when ALL constraints are satisfied and stable
-                # ============================================================
-                # Strategy: Stop after N consecutive steps satisfying ALL constraints
-                # This prevents premature stopping due to temporary fluctuations
-                # and avoids violating constraint after satisfying it (e.g., Attacker 8)
-                
-                # Check distance constraint
-                dist_satisfied = dist_att_val <= dist_bound_val if dist_bound_val is not None else True
-                
-                # Check similarity constraints (TWO-SIDED: both lower and upper bounds)
-                if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
-                    # Use sim_att_to_global computed above in the constraint calculation
-                    sim_att_val = sim_att_to_global.item()
-                    
-                    benign_sim_mean_val = cached_benign_sim_stats['mean'].item()
-                    benign_sim_std_val = cached_benign_sim_stats['std'].item()
-                    
-                    # Two-sided constraint: sim_bound_low <= sim_att <= sim_bound_up
-                    # Always use mean ± 2*std mode (more stable than min/max, avoids outlier issues)
-                    if self.sim_center is not None:
-                        sim_center_val = self.sim_center
-                        sim_bound_low_val = max(-1.0, min(1.0, sim_center_val - 2.0 * benign_sim_std_val))
-                        sim_bound_up_val = max(-1.0, min(1.0, sim_center_val + 2.0 * benign_sim_std_val))
-                    else:
-                        # Use mean ± 2*std (statistically robust, covers ~97.5% of benign clients, less affected by outliers)
-                        sim_bound_low_val = max(-1.0, min(1.0, benign_sim_mean_val - 2.0 * benign_sim_std_val))
-                        sim_bound_up_val = max(-1.0, min(1.0, benign_sim_mean_val + 2.0 * benign_sim_std_val))
-                    
-                    # Constraint satisfied when sim_att is within bounds
-                    sim_satisfied = (sim_att_val >= sim_bound_low_val) and (sim_att_val <= sim_bound_up_val)
-                else:
-                    sim_satisfied = True  # If similarity constraint not enabled, consider it satisfied
-                    sim_att_val = 0.0  # Dummy value for logging
-                    benign_sim_mean_val = 0.0  # Dummy value for logging
+                        sim_satisfied = True  # If similarity constraint not enabled, consider it satisfied
+                        sim_att_val = 0.0  # Dummy value for logging
+                        benign_sim_mean_val = 0.0  # Dummy value for logging
                     
                     # Both constraints satisfied
                     all_constraints_satisfied = dist_satisfied and sim_satisfied
@@ -3135,7 +3198,7 @@ class AttackerClient(Client):
             final_global_ref_cpu, _, _ = self._aggregate_update_no_beta(
                 malicious_update_cpu,
                 benign_updates=self.benign_updates,
-                other_attacker_updates=self.other_attacker_updates if hasattr(self, 'other_attacker_updates') else None
+                other_attacker_updates_list=self.other_attacker_updates if hasattr(self, 'other_attacker_updates') else None
             )
             dist_to_global_final = torch.norm(malicious_update_cpu.view(-1) - final_global_ref_cpu.view(-1))
             dist_to_global = dist_to_global_final.item()
