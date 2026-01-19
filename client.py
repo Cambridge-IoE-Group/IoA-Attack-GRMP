@@ -1643,29 +1643,45 @@ class AttackerClient(Client):
         agg = torch.zeros_like(malicious_update, device=device).view(-1)
         
         # Add benign updates (GPU versions should already be on correct device)
-        # CRITICAL: No device conversion in optimization loop - GPU versions are pre-transferred to target_device
-        # If device mismatch occurs, it indicates a bug in GPU version creation
+        # CRITICAL: In optimization loop, GPU versions are pre-transferred to target_device
+        # For final check (after GPU cleanup), allow device conversion to match malicious_update
         for w, benign_update in zip(w_ben, benign_updates_to_use):
-            # CRITICAL: Verify device consistency - if mismatch, it's a bug, not a feature
+            # In optimization loop: strict device check (GPU versions should match)
+            # After optimization: allow conversion (final check uses CPU versions)
             if benign_update.device != device:
-                raise RuntimeError(
-                    f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
-                    f"benign_update on {benign_update.device}, expected {device}. "
-                    f"This should not happen if GPU versions are created correctly."
-                )
+                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
+                # Check if we're in final check phase (GPU caches don't exist)
+                if not (hasattr(self, 'benign_updates_gpu') and len(getattr(self, 'benign_updates_gpu', [])) > 0):
+                    # Final check phase: allow conversion
+                    benign_update = benign_update.to(device)
+                else:
+                    # Optimization loop: strict check (should not happen)
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
+                        f"benign_update on {benign_update.device}, expected {device}. "
+                        f"This should not happen if GPU versions are created correctly."
+                    )
             agg = agg + w * benign_update.view(-1)
         
         # ===== NEW: Add other attackers' updates =====
-        # CRITICAL: No device conversion in optimization loop - GPU versions are pre-transferred to target_device
-        # If device mismatch occurs, it indicates a bug in GPU version creation
+        # CRITICAL: In optimization loop, GPU versions are pre-transferred to target_device
+        # For final check (after GPU cleanup), allow device conversion to match malicious_update
         for w, other_attacker_update in zip(w_other_att, other_attacker_updates_list):
-            # CRITICAL: Verify device consistency - if mismatch, it's a bug, not a feature
+            # In optimization loop: strict device check (GPU versions should match)
+            # After optimization: allow conversion (final check uses CPU versions)
             if other_attacker_update.device != device:
-                raise RuntimeError(
-                    f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
-                    f"other_attacker_update on {other_attacker_update.device}, expected {device}. "
-                    f"This should not happen if GPU versions are created correctly."
-                )
+                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
+                # Check if we're in final check phase (GPU caches don't exist)
+                if not (hasattr(self, 'other_attacker_updates_gpu') and len(getattr(self, 'other_attacker_updates_gpu', [])) > 0):
+                    # Final check phase: allow conversion
+                    other_attacker_update = other_attacker_update.to(device)
+                else:
+                    # Optimization loop: strict check (should not happen)
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
+                        f"other_attacker_update on {other_attacker_update.device}, expected {device}. "
+                        f"This should not happen if GPU versions are created correctly."
+                    )
             agg = agg + w * other_attacker_update.view(-1)
         # ==============================================
         
@@ -2936,12 +2952,15 @@ class AttackerClient(Client):
         # STEP 8: Final constraint check (pure Lagrangian optimization, no projection)
         # ============================================================
         # Use effective d_T (which may be auto-computed from benign mean if self.d_T is None)
+        # CRITICAL: Ensure malicious_update is on CPU for final check (GPU caches have been cleaned up)
+        malicious_update_cpu = malicious_update.cpu() if malicious_update.device.type == 'cuda' else malicious_update
         effective_d_T = getattr(self, '_effective_d_T', self.d_T)
         if effective_d_T is not None:
             # Use UPDATE space distance calculation
-            # Note: GPU caches may have been cleaned up, so use CPU versions for final check
+            # Note: GPU caches have been cleaned up, so use CPU versions for final check
+            # CRITICAL: malicious_update must be on CPU to match benign_updates (which are on CPU)
             dist_to_global_tensor, _ = self._compute_distance_update_space(
-                malicious_update,
+                malicious_update_cpu,
                 benign_updates=self.benign_updates
             )
             dist_to_global = dist_to_global_tensor.item()
@@ -2961,7 +2980,8 @@ class AttackerClient(Client):
         
         # Compute final attack objective value for logging
         # Use aggregated update for final loss (consistent with optimization objective)
-        final_aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update, self.benign_updates)
+        # CRITICAL: Use CPU version for final aggregation (GPU caches have been cleaned up)
+        final_aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update_cpu, self.benign_updates)
         final_global_loss = self._proxy_global_loss(final_aggregated_update, max_batches=self.proxy_max_batches_eval, skip_dim_check=True)
         
         malicious_norm = torch.norm(malicious_update).item()
@@ -2976,10 +2996,13 @@ class AttackerClient(Client):
         
         print(log_msg)
         
-        # Move malicious_update to CPU before returning to free GPU memory
-        malicious_update_cpu = malicious_update.cpu()
-        # Clean up GPU references
-        del malicious_update, final_global_loss
+        # CRITICAL: malicious_update_cpu is already on CPU (created above for final check)
+        # No need to convert again, but ensure it's detached
+        malicious_update_final = malicious_update_cpu.detach()
+        # Clean up GPU references if malicious_update was on GPU
+        if malicious_update.device.type == 'cuda':
+            del malicious_update
+        del final_global_loss
         torch.cuda.empty_cache()
         
-        return malicious_update_cpu.detach()
+        return malicious_update_final

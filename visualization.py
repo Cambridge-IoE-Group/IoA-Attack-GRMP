@@ -305,10 +305,10 @@ class ExperimentVisualizer:
                 center = (y_min + y_max) / 2
                 y_min_adjusted = max(0.0, center - 0.1)
                 y_max_adjusted = min(1.0, center + 0.1)
-            else:
-                # Fallback to default range if no data
-                y_min_adjusted = 0.0
-                y_max_adjusted = 1.0
+        else:
+            # Fallback to default range if no data
+            y_min_adjusted = 0.0
+            y_max_adjusted = 1.0
         
         # Plot benign agents - IEEE style colors (use aligned data)
         for i, client_data in enumerate(aligned_benign_data):
