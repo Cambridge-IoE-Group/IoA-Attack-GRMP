@@ -643,20 +643,19 @@ def main():
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 32,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
         'vgae_latent_dim': 16,  # VGAE latent space dimension (per paper: hidden2_dim=16)
-        'vgae_dropout': 0.1,  # VGAE dropout rate (float, 0.0-1.0)
+        'vgae_dropout': 0.5,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 150,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
-        'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
+        'grad_clip_norm': 20.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
-        
         # Distance constraint multiplier parameters
         'lambda_dist_init': 1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
         'lambda_dist_lr': 1.0,    # Learning rate for λ_dist(t) update (dual ascent step size)
