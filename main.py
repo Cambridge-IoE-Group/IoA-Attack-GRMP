@@ -680,7 +680,7 @@ def main():
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
-        'gsp_perturbation_scale': 0.001,  # Perturbation scale for GSP attack diversity (float)
+        'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
         'grad_clip_norm': 10.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
@@ -691,14 +691,14 @@ def main():
         
         # Distance constraint multiplier parameters
         'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
-        'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
+        'lambda_dist_lr': 0.1,    # Learning rate for λ_dist(t) update (dual ascent step size)
         
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
         'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraints (bool, True/False)
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
         'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
-        'lambda_sim_low_lr': 0.01,    # Learning rate for λ_sim_low(t) update
-        'lambda_sim_up_lr': 0.01,     # Learning rate for λ_sim_up(t) update
+        'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
+        'lambda_sim_up_lr': 0.1,     # Learning rate for λ_sim_up(t) update
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
