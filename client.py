@@ -1694,11 +1694,16 @@ class AttackerClient(Client):
         for w, benign_update in zip(w_ben, benign_updates_to_use):
             # In optimization loop: strict device check (GPU versions should match)
             # After optimization: allow conversion (final check uses CPU versions)
+            # NOTE: Also allow conversion if GPU versions exist but CPU versions were explicitly passed
+            # (e.g., in statistics calculation functions that intentionally use CPU versions)
             if benign_update.device != device:
-                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
-                # Check if we're in final check phase (GPU caches don't exist)
-                if not (hasattr(self, 'benign_updates_gpu') and len(getattr(self, 'benign_updates_gpu', [])) > 0):
-                    # Final check phase: allow conversion
+                # Allow conversion if:
+                # 1. Not in optimization loop (GPU caches cleaned up), OR
+                # 2. GPU versions exist but benign_updates_gpu was explicitly set to None (statistics calculation)
+                benign_updates_gpu_exists = hasattr(self, 'benign_updates_gpu') and len(getattr(self, 'benign_updates_gpu', [])) > 0
+                
+                if not benign_updates_gpu_exists or (benign_updates_gpu_exists and benign_updates_gpu is None):
+                    # Final check phase or statistics calculation: allow conversion
                     benign_update = benign_update.to(device)
                 else:
                     # Optimization loop: strict check (should not happen)
@@ -1715,11 +1720,16 @@ class AttackerClient(Client):
         for w, other_attacker_update in zip(w_other_att, other_updates_to_use):
             # In optimization loop: strict device check (GPU versions should match)
             # After optimization: allow conversion (final check uses CPU versions)
+            # NOTE: Also allow conversion if GPU versions exist but CPU versions were explicitly passed
+            # (e.g., in statistics calculation functions that intentionally use CPU versions)
             if other_attacker_update.device != device:
-                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
-                # Check if we're in final check phase (GPU caches don't exist)
-                if not (hasattr(self, 'other_attacker_updates_gpu') and len(getattr(self, 'other_attacker_updates_gpu', [])) > 0):
-                    # Final check phase: allow conversion
+                # Allow conversion if:
+                # 1. Not in optimization loop (GPU caches cleaned up), OR
+                # 2. GPU versions exist but other_attacker_updates_gpu was explicitly set to None (statistics calculation)
+                other_attacker_updates_gpu_exists = hasattr(self, 'other_attacker_updates_gpu') and len(getattr(self, 'other_attacker_updates_gpu', [])) > 0
+                
+                if not other_attacker_updates_gpu_exists or (other_attacker_updates_gpu_exists and other_attacker_updates_gpu is None):
+                    # Final check phase or statistics calculation: allow conversion
                     other_attacker_update = other_attacker_update.to(device)
                 else:
                     # Optimization loop: strict check (should not happen)
@@ -2670,6 +2680,7 @@ class AttackerClient(Client):
         # Similar to similarity constraint: if d_T is None, use benign mean distance
         # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         # NOTE: Statistics are still computed from benign-only, but constraints use global reference
+        # NOTE: Use CPU versions for statistics calculation (happens before optimization loop on GPU)
         if len(self.benign_updates) > 0:
             cached_benign_dist_stats = self._compute_benign_distance_statistics(
                 self.benign_updates,
@@ -2709,6 +2720,7 @@ class AttackerClient(Client):
         # Compute this BEFORE initial state printing so we can include similarity info
         if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
             # Use initial proxy_param to compute global statistics (ALL clients)
+            # NOTE: Use CPU versions for statistics calculation (happens before optimization loop on GPU)
             cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
                 self.benign_updates,
                 proxy_param.detach(),  # Include current attacker
