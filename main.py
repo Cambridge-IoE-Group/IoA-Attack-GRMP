@@ -595,7 +595,7 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 5,  # Total number of federated learning clients (int)
-        'num_attackers': 0,  # Number of attacker clients (int, must be < num_clients)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -610,7 +610,7 @@ def main():
         'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
         
         # ========== Data Distribution ==========
-        'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
+        'dirichlet_alpha': 100,  # Make data less extreme non-IID (higher alpha = more balanced)
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         # 'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
@@ -650,7 +650,7 @@ def main():
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.01,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
-        'grad_clip_norm': 10.0,  # Gradient clipping norm for training stability (float)
+        'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
@@ -659,14 +659,14 @@ def main():
         
         # Distance constraint multiplier parameters
         'lambda_dist_init': 1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
-        'lambda_dist_lr': 0.1,    # Learning rate for λ_dist(t) update (dual ascent step size)
+        'lambda_dist_lr': 1.0,    # Learning rate for λ_dist(t) update (dual ascent step size)
         
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
         'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False)
         'lambda_sim_low_init': 1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
         'lambda_sim_up_init': 1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
-        'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
-        'lambda_sim_up_lr': 0.1,     # Learning rate for λ_sim_up(t) update
+        'lambda_sim_low_lr': 1.0,    # Learning rate for λ_sim_low(t) update
+        'lambda_sim_up_lr': 1.0,     # Learning rate for λ_sim_up(t) update
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
