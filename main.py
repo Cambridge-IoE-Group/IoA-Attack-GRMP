@@ -678,7 +678,7 @@ def main():
         'vgae_dropout': 0.1,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.001,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
