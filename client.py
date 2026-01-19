@@ -1859,7 +1859,7 @@ class AttackerClient(Client):
             Dictionary with statistics: mean, std, min, max, median
         """
         # Compute aggregated update from BENIGN CLIENTS ONLY (ensures consistent sim_T across attackers)
-        aggregated_update = self._aggregate_benign_only(benign_updates)
+        aggregated_update = self._aggregate_benign_only(benign_updates, device=None)
         aggregated_flat = aggregated_update.view(-1)
         device = aggregated_flat.device
         
@@ -1914,7 +1914,7 @@ class AttackerClient(Client):
         """
         # Compute or use provided benign reference update (BENIGN ONLY)
         if benign_ref_update is None:
-            benign_ref_update = self._aggregate_benign_only(benign_updates)
+            benign_ref_update = self._aggregate_benign_only(benign_updates, device=None)
         
         aggregated_flat = benign_ref_update.view(-1)
         device = aggregated_flat.device
