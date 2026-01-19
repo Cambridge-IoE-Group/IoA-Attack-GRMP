@@ -1709,7 +1709,7 @@ class AttackerClient(Client):
         
         return agg.view(-1), w_att, w_ben
     
-    def _aggregate_benign_only(self, benign_updates: List[torch.Tensor]) -> torch.Tensor:
+    def _aggregate_benign_only(self, benign_updates: List[torch.Tensor], device=None) -> torch.Tensor:
         """
         Aggregate ONLY benign updates (no attackers) for statistics computation.
         
@@ -1723,6 +1723,7 @@ class AttackerClient(Client):
         
         Args:
             benign_updates: List of all benign updates Δ_i
+            device: Target device for the aggregated tensor (None = use first update's device)
         
         Returns:
             aggregated_update: Δ_g_benign (aggregated update from benign clients only)
@@ -1730,9 +1731,13 @@ class AttackerClient(Client):
         if len(benign_updates) == 0:
             # Return zero tensor if no benign updates
             # This should not happen in practice, but handle gracefully
-            return torch.zeros(1, device=self.device)
+            target_device = device if device is not None else self.device
+            return torch.zeros(1, device=target_device)
         
-        device = benign_updates[0].device
+        if device is None:
+            device = benign_updates[0].device
+        else:
+            device = device
         D_list = []
         D_sum = 0.0
         
@@ -1758,7 +1763,9 @@ class AttackerClient(Client):
         w_ben = [D_i / denom for D_i in D_list]
         
         # Aggregate updates: Δ_g_benign = Σ w_i * Δ_i (only benign)
-        agg = torch.zeros_like(benign_updates[0], device=device).view(-1)
+        # Get shape from first update, but place on target device
+        first_update_shape = benign_updates[0].shape
+        agg = torch.zeros(first_update_shape, device=device).view(-1)
         
         # Add benign updates only
         for w, benign_update in zip(w_ben, benign_updates):
