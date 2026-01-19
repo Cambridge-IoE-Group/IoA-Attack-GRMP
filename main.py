@@ -627,7 +627,7 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 10,  # Total number of federated learning clients (int)
-        'num_attackers': 3,  # Number of attacker clients (int, must be < num_clients)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -671,7 +671,7 @@ def main():
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
         'dim_reduction_size': 10000,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
-        'vgae_epochs': 50,  # Number of epochs for VGAE training (reference: 10)
+        'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
         'vgae_latent_dim': 32,  # VGAE latent space dimension (per paper: hidden2_dim=16)
@@ -679,10 +679,10 @@ def main():
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'gsp_perturbation_scale': 0.001,  # Perturbation scale for GSP attack diversity (float)
         'opt_init_perturbation_scale': 0.01,  # Perturbation scale for optimization initialization (float)
-        'grad_clip_norm': 2.0,  # Gradient clipping norm for training stability (float)
+        'grad_clip_norm': 10.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
@@ -690,15 +690,15 @@ def main():
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
         
         # Distance constraint multiplier parameters
-        'lambda_dist_init': 100,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
-        'lambda_dist_lr': 1.0,    # Learning rate for λ_dist(t) update (dual ascent step size)
+        'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
+        'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
         
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
         'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraints (bool, True/False)
-        'lambda_sim_low_init': 100,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
-        'lambda_sim_up_init': 100,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
-        'lambda_sim_low_lr': 1.0,    # Learning rate for λ_sim_low(t) update
-        'lambda_sim_up_lr': 1.0,     # Learning rate for λ_sim_up(t) update
+        'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
+        'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
+        'lambda_sim_low_lr': 0.01,    # Learning rate for λ_sim_low(t) update
+        'lambda_sim_up_lr': 0.01,     # Learning rate for λ_sim_up(t) update
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
