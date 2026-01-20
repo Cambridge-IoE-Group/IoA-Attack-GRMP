@@ -1,5 +1,5 @@
 # server.py
-# This module implements the Server class for federated learning, including model aggregation and defense mechanisms against GRMP attacks.
+# This module implements the Server class for federated learning, including model aggregation.
 
 import torch
 import torch.nn as nn
@@ -11,15 +11,12 @@ import torch.nn.functional as F
 
 
 class Server:
-    """Server class for federated learning with GRMP attack defense"""
+    """Server class for federated learning with model aggregation"""
     def __init__(self, global_model: nn.Module, test_loader,
-                enable_defense=True, defense_threshold=0.4, total_rounds=20, server_lr=0.8, tolerance_factor=2,
-                dist_bound=0.5,
-                defense_high_rejection_threshold=0.4, defense_threshold_decay=0.9):
+                total_rounds=20, server_lr=0.8,
+                dist_bound=0.5):
         self.global_model = copy.deepcopy(global_model)
         self.test_loader = test_loader
-        self.enable_defense = enable_defense
-        self.defense_threshold = defense_threshold
         self.total_rounds = total_rounds
         # CRITICAL: Use explicit cuda:0 instead of 'cuda' to ensure device consistency
         # This prevents issues where 'cuda' and 'cuda:0' are treated as different devices
@@ -32,22 +29,16 @@ class Server:
         self.client_dict = {}  # client_id -> client mapping for O(1) lookup
         self.log_data = []
 
-        # Additional stability parameters
-        self.server_lr = server_lr  # Server learning rate (inertia)
-        self.tolerance_factor = tolerance_factor  # Defense tolerance level
+        # Server parameters
+        self.server_lr = server_lr  # Server learning rate
         
         # Formula 4 constraint parameters (passed to attackers)
         self.dist_bound = dist_bound  # Distance threshold for constraint (4b)
         self.sim_center = None  # Cosine similarity center (optional, will be set from config if provided)
-        
-        # Adaptive defense parameters
-        self.defense_high_rejection_threshold = defense_high_rejection_threshold  # High rejection rate threshold
-        self.defense_threshold_decay = defense_threshold_decay  # Threshold decay factor
 
-        # Track historical data for adaptive adjustments
+        # Track historical data
         self.history = {
             'clean_acc': [],  # Clean accuracy
-            'rejection_rates': [],  # Client rejection rates
             'local_accuracies': {}  # Local accuracies per client per round {client_id: [acc1, acc2, ...]}
         }
 
@@ -220,201 +211,51 @@ class Server:
         self._current_client_ids = client_ids
         self._sorted_client_ids = client_ids
         
-        # If defense is disabled, use standard FedAvg but still compute metrics for visualization
-        if not self.enable_defense:
-            # Standard FedAvg aggregation (defense mechanism disabled)
-            weights = []
-            for cid in client_ids:
-                client = self.clients[cid]
-                # Use actual data size for weighting (standard FedAvg)
+        # Standard FedAvg aggregation
+        weights = []
+        for cid in client_ids:
+            client = self.clients[cid]
+            if getattr(client, 'is_attacker', False):
+                w = getattr(client, 'claimed_data_size', 1.0)
+            else:
                 w = len(getattr(client, 'data_indices', [])) or 1.0
-                weights.append(w)
-            
-            # Weighted aggregation (standard FedAvg)
-            dtype = updates[0].dtype
-            stacked = torch.stack(updates).to(self.device)
-            weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
-            weight_tensor = weight_tensor / weight_tensor.sum()
-            aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
-            aggregated_update_norm = torch.norm(aggregated_update).item()
-            del stacked
-            
-            # Update global model (standard FedAvg: w_t+1 = w_t + η * aggregated_update)
-            current_params = self.global_model.get_flat_params()
-            new_params = current_params + self.server_lr * aggregated_update
-            self.global_model.set_flat_params(new_params)
-            
-            print(f"  📊 Standard FedAvg (Defense Disabled): Aggregated {len(updates)}/{len(updates)} updates")
-            print(f"  🔧 Server Learning Rate: {self.server_lr}")
-            print(f"  📐 Aggregated update norm: {aggregated_update_norm:.6f}")
-            
-            # Compute similarity and distance metrics for visualization (even though defense is disabled)
-            # This allows observing attack impact through metrics
-            # Pass client_ids to ensure weighted aggregation matches attack optimization
-            similarities = self._compute_similarities(updates, client_ids)
-            euclidean_distances = self._compute_euclidean_distances(updates, client_ids) if len(updates) > 0 else np.array([])
-            
-            defense_log = {
-                'similarities': similarities.tolist(),
-                'euclidean_distances': euclidean_distances.tolist() if len(euclidean_distances) > 0 else [],
-                'accepted_clients': client_ids.copy(),  # All clients accepted when defense is disabled
-                'rejected_clients': [],
-                'threshold': 0.0,
-                'mean_similarity': similarities.mean().item() if len(similarities) > 0 else 1.0,
-                'std_similarity': similarities.std().item() if len(similarities) > 0 else 0.0,
-                'mean_euclidean_distance': euclidean_distances.mean().item() if len(euclidean_distances) > 0 else 0.0,
-                'std_euclidean_distance': euclidean_distances.std().item() if len(euclidean_distances) > 0 else 0.0,
-                'tolerance_factor': self.tolerance_factor,
-                'rejection_rate': 0.0,
-                'aggregated_update_norm': aggregated_update_norm
-            }
-            self.history['rejection_rates'].append(0.0)
-            return defense_log
+            weights.append(w)
         
-        # Check if there are any attackers
-        has_attackers = any(getattr(self.clients[cid], 'is_attacker', False) for cid in client_ids)
+        # Weighted aggregation (standard FedAvg)
+        dtype = updates[0].dtype
+        stacked = torch.stack(updates).to(self.device)
+        weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
+        weight_tensor = weight_tensor / weight_tensor.sum()
+        aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
+        aggregated_update_norm = torch.norm(aggregated_update).item()
+        del stacked
         
-        if not has_attackers:
-            # Standard FedAvg aggregation (no defense mechanism for baseline experiments)
-            # This is the standard federated learning aggregation when there are no attackers
-            weights = []
-            for cid in client_ids:
-                client = self.clients[cid]
-                # Use actual data size for weighting (standard FedAvg)
-                w = len(getattr(client, 'data_indices', [])) or 1.0
-                weights.append(w)
-            
-            # Weighted aggregation (standard FedAvg)
-            dtype = updates[0].dtype
-            stacked = torch.stack(updates).to(self.device)
-            weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
-            weight_tensor = weight_tensor / weight_tensor.sum()
-            aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
-            aggregated_update_norm = torch.norm(aggregated_update).item()
-            del stacked
-            
-            # Update global model (standard FedAvg: w_t+1 = w_t + η * aggregated_update)
-            current_params = self.global_model.get_flat_params()
-            new_params = current_params + self.server_lr * aggregated_update
-            self.global_model.set_flat_params(new_params)
-            
-            print(f"  📊 Standard FedAvg: Aggregated {len(updates)}/{len(updates)} updates")
-            print(f"  🔧 Server Learning Rate: {self.server_lr}")
-            print(f"  📐 Aggregated update norm: {aggregated_update_norm:.6f}")
-            
-            # Compute similarity and distance metrics for visualization (even when no attackers)
-            # This provides baseline metrics for comparison
-            # Pass client_ids to ensure weighted aggregation matches attack optimization
-            similarities = self._compute_similarities(updates, client_ids)
-            euclidean_distances = self._compute_euclidean_distances(updates, client_ids) if len(updates) > 0 else np.array([])
-            defense_log = {
-                'similarities': similarities.tolist(),
-                'euclidean_distances': euclidean_distances.tolist() if len(euclidean_distances) > 0 else [],
-                'accepted_clients': client_ids.copy(),
-                'rejected_clients': [],
-                'threshold': 0.0,
-                'mean_similarity': similarities.mean().item() if len(similarities) > 0 else 1.0,
-                'std_similarity': similarities.std().item() if len(similarities) > 0 else 0.0,
-                'mean_euclidean_distance': euclidean_distances.mean().item() if len(euclidean_distances) > 0 else 0.0,
-                'std_euclidean_distance': euclidean_distances.std().item() if len(euclidean_distances) > 0 else 0.0,
-                'tolerance_factor': self.tolerance_factor,
-                'rejection_rate': 0.0,
-                'aggregated_update_norm': aggregated_update_norm
-            }
-            self.history['rejection_rates'].append(0.0)
-            return defense_log
+        # Update global model (standard FedAvg: w_t+1 = w_t + η * aggregated_update)
+        current_params = self.global_model.get_flat_params()
+        new_params = current_params + self.server_lr * aggregated_update
+        self.global_model.set_flat_params(new_params)
         
-        # Defense mechanism (only when there are attackers)
-        """
-        Aggregate updates - Enhanced stability version.
-        Uses a more lenient defense mechanism and smooth update strategy.
-        """
+        print(f"  📊 Standard FedAvg: Aggregated {len(updates)}/{len(updates)} updates")
+        print(f"  🔧 Server Learning Rate: {self.server_lr}")
+        print(f"  📐 Aggregated update norm: {aggregated_update_norm:.6f}")
+        
+        # Compute similarity and distance metrics for visualization
         # Pass client_ids to ensure weighted aggregation matches attack optimization
         similarities = self._compute_similarities(updates, client_ids)
-        euclidean_distances = self._compute_euclidean_distances(updates, client_ids)
-
-        # Compute dynamic threshold (more lenient)
-        mean_sim = similarities.mean()
-        std_sim = similarities.std()
-
-        # Apply tolerance_factor to make the threshold more lenient
-        dynamic_threshold = max(self.defense_threshold,
-                                mean_sim - self.tolerance_factor * std_sim)
-
-        # Adaptive adjustment: If rejection rates are too high, further lower the threshold
-        if len(self.history['rejection_rates']) > 0:
-            recent_rejection_rate = np.mean(self.history['rejection_rates'][-3:])
-            if recent_rejection_rate > self.defense_high_rejection_threshold:
-                dynamic_threshold *= self.defense_threshold_decay
-                print(f"  ⚠️ High rejection rate detected. Lowering threshold to: {dynamic_threshold:.3f}")
-
-        accepted_indices = []
-        rejected_indices = []
-
-        for i, sim in enumerate(similarities):
-            if sim >= dynamic_threshold:
-                accepted_indices.append(i)
-            else:
-                rejected_indices.append(i)
-
-        # Record rejection rate
-        rejection_rate = len(rejected_indices) / len(updates)
-        self.history['rejection_rates'].append(rejection_rate)
-
-        # Aggregate updates from accepted clients
-        aggregated_update_norm = 0.0
-        if accepted_indices:
-            accepted_updates = [updates[i] for i in accepted_indices]
-            # Weighted aggregation by claimed data sizes (paper: D_i/D(t)).
-            # For benign clients, try to use their data_indices length if available.
-            weights = []
-            for i in accepted_indices:
-                cid = client_ids[i]
-                client = self.clients[cid]
-                if getattr(client, 'is_attacker', False):
-                    w = getattr(client, 'claimed_data_size', 1.0)
-                else:
-                    w = len(getattr(client, 'data_indices', [])) or 1.0
-                weights.append(w)
-            # Updates are on CPU, but aggregation can be done on CPU and then moved
-            # Move to GPU for computation if needed, or keep on CPU
-            dtype = accepted_updates[0].dtype
-            # Stack on CPU (updates are on CPU), then move to GPU for weighted sum
-            stacked = torch.stack(accepted_updates).to(self.device)  # Move to GPU for aggregation
-            weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
-            weight_tensor = weight_tensor / weight_tensor.sum()
-            aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
-            aggregated_update_norm = torch.norm(aggregated_update).item()
-            # Clean up stacked tensor immediately
-            del stacked
-
-            # Smooth the global model update using server learning rate (key improvement)
-            current_params = self.global_model.get_flat_params()
-            new_params = current_params + self.server_lr * aggregated_update
-            self.global_model.set_flat_params(new_params)
-
-            print(f"  📊 Update Stats: Accepted {len(accepted_indices)}/{len(updates)} updates")
-            print(f"  🔧 Server Learning Rate: {self.server_lr} (Smooth updates)")
-            print(f"  📐 Aggregated update norm: {aggregated_update_norm:.6f}")
-        else:
-            print("  ⚠️ Warning: No updates were accepted this round!")
-
-        defense_log = {
+        euclidean_distances = self._compute_euclidean_distances(updates, client_ids) if len(updates) > 0 else np.array([])
+        
+        aggregation_log = {
             'similarities': similarities.tolist(),
-            'euclidean_distances': euclidean_distances.tolist(),  # Add Euclidean distances
-            'accepted_clients': [client_ids[i] for i in accepted_indices],
-            'rejected_clients': [client_ids[i] for i in rejected_indices],
-            'threshold': dynamic_threshold,
-            'mean_similarity': mean_sim,
-            'std_similarity': std_sim,
-            'mean_euclidean_distance': euclidean_distances.mean().item(),
-            'std_euclidean_distance': euclidean_distances.std().item(),
-            'tolerance_factor': self.tolerance_factor,
-            'rejection_rate': rejection_rate,
+            'euclidean_distances': euclidean_distances.tolist() if len(euclidean_distances) > 0 else [],
+            'accepted_clients': client_ids.copy(),
+            'mean_similarity': similarities.mean().item() if len(similarities) > 0 else 1.0,
+            'std_similarity': similarities.std().item() if len(similarities) > 0 else 0.0,
+            'mean_euclidean_distance': euclidean_distances.mean().item() if len(euclidean_distances) > 0 else 0.0,
+            'std_euclidean_distance': euclidean_distances.std().item() if len(euclidean_distances) > 0 else 0.0,
             'aggregated_update_norm': aggregated_update_norm
         }
 
-        return defense_log
+        return aggregation_log
 
     def evaluate_local_accuracy(self, client) -> float:
         """
@@ -501,8 +342,8 @@ class Server:
         # Adaptive adjustment
         self.adaptive_adjustment(round_num)
 
-        # Display current parameters (no hard-coded stage logic)
-        print(f"Current Parameters: server_lr={self.server_lr:.2f}, tolerance={self.tolerance_factor:.1f}")
+        # Display current parameters
+        print(f"Current Parameters: server_lr={self.server_lr:.2f}")
         print(f"{'=' * 60}")
 
         # Broadcast the model
@@ -596,13 +437,13 @@ class Server:
             else:
                 final_updates[client_id] = update
 
-        # Phase 4: Defense and Aggregation
-        print("\n🛡️ Phase 4: Defense and Aggregation")
+        # Phase 4: Aggregation
+        print("\n📊 Phase 4: Model Aggregation")
         # Ensure deterministic order of keys
         sorted_client_ids = sorted(final_updates.keys())
         final_update_list = [final_updates[cid] for cid in sorted_client_ids]
         
-        defense_log = self.aggregate_updates(final_update_list, sorted_client_ids)
+        aggregation_log = self.aggregate_updates(final_update_list, sorted_client_ids)
 
         # Evaluate the global model
         clean_acc = self.evaluate()
@@ -622,20 +463,15 @@ class Server:
                 # Skip if evaluation fails (e.g., empty data loader)
                 print(f"  ⚠️  Could not evaluate local accuracy for client {client.client_id}: {e}")
 
-        # Defense analysis
-        print(f"\n📈 Defense Analysis:")
-        print(f"  Dynamic Threshold: {defense_log['threshold']:.4f}")
-        print(f"  Rejection Rate: {defense_log['rejection_rate']:.1%}")
-
         # Create log for the current round
         round_log = {
             'round': round_num + 1,
             'clean_accuracy': clean_acc,
             'acc_diff': (abs(clean_acc - self.history['clean_acc'][-2])
                          if len(self.history['clean_acc']) > 1 else 0.0),
-            'defense': defense_log,
+            'aggregation': aggregation_log,
             'server_lr': self.server_lr,
-            'local_accuracies': local_accs_this_round  # Add local accuracies
+            'local_accuracies': local_accs_this_round
         }
 
         self.log_data.append(round_log)

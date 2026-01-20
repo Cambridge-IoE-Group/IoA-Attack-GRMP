@@ -10,7 +10,7 @@
 ├── data_loader.py            # Data loading and preprocessing
 ├── main.py                   # Main experiment script: configures and runs FL experiments
 ├── models.py                 # Learning model definitions
-├── server.py                 # Server implementation: model aggregation and defense mechanisms
+├── server.py                 # Server implementation: model aggregation
 └── visualization.py          # Visualization module: generates Figure
 ```
 

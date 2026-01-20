@@ -140,14 +140,9 @@ def setup_experiment(config):
     server = Server(
         global_model=global_model,
         test_loader=test_loader,
-        enable_defense=config['enable_defense'],
-        defense_threshold=config['defense_threshold'],
         total_rounds=config['num_rounds'],
         server_lr=config['server_lr'],
-        tolerance_factor=config['tolerance_factor'],
-        dist_bound=config.get('dist_bound', config.get('d_T', 0.5)),  # Renamed from d_T
-        defense_high_rejection_threshold=config['defense_high_rejection_threshold'],
-        defense_threshold_decay=config['defense_threshold_decay']
+        dist_bound=config.get('dist_bound', config.get('d_T', 0.5))  # Renamed from d_T
     )
     # Set sim_center from config (cosine similarity center, optional)
     server.sim_center = config.get('sim_center', config.get('sim_T', None))
@@ -263,7 +258,6 @@ def run_experiment(config):
         'rounds': [],
         'clean_acc': [],
         'acc_diff': [],
-        'rejection_rate': [],
         'agg_update_norm': []
     }
 
@@ -275,8 +269,7 @@ def run_experiment(config):
             progressive_metrics['rounds'].append(round_num + 1)
             progressive_metrics['clean_acc'].append(round_log['clean_accuracy'])
             progressive_metrics['acc_diff'].append(round_log.get('acc_diff', 0.0))
-            progressive_metrics['rejection_rate'].append(round_log['defense'].get('rejection_rate', 0.0))
-            progressive_metrics['agg_update_norm'].append(round_log['defense'].get('aggregated_update_norm', 0.0))
+            progressive_metrics['agg_update_norm'].append(round_log['aggregation'].get('aggregated_update_norm', 0.0))
             
             # Memory cleanup after each round
             gc.collect()
@@ -374,12 +367,11 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
     for log in server_log_data:
         if 'local_accuracies' in log:
             all_client_ids.update(log['local_accuracies'].keys())
-        if 'defense' in log and 'similarities' in log['defense']:
+        if 'aggregation' in log and 'similarities' in log['aggregation']:
             # Infer client IDs from similarities count (if available)
-            similarities = log['defense'].get('similarities', [])
-            accepted = log['defense'].get('accepted_clients', [])
-            rejected = log['defense'].get('rejected_clients', [])
-            all_client_ids.update(accepted + rejected)
+            similarities = log['aggregation'].get('similarities', [])
+            accepted = log['aggregation'].get('accepted_clients', [])
+            all_client_ids.update(accepted)
     
     # Also include from local_accuracies history
     if local_accuracies:
@@ -416,20 +408,18 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
     for cid in all_client_ids:
         client_type = "A" if cid in attacker_ids_set else "B"
         header += f"Client{cid}({client_type}) | "
-    header += "Threshold | Mean | Std"
+    header += "Mean | Std"
     print(header)
     print("-" * 80)
     
     for log in server_log_data:
         round_num = log['round']
-        defense = log.get('defense', {})
-        similarities = defense.get('similarities', [])
-        threshold = defense.get('threshold', 0.0)
-        accepted = defense.get('accepted_clients', [])
-        rejected = defense.get('rejected_clients', [])
+        aggregation = log.get('aggregation', {})
+        similarities = aggregation.get('similarities', [])
+        accepted = aggregation.get('accepted_clients', [])
         
         # Create similarity map
-        all_clients_round = sorted(set(accepted + rejected))
+        all_clients_round = sorted(set(accepted))
         sim_map = {}
         if len(similarities) == len(all_clients_round):
             for idx, cid in enumerate(all_clients_round):
@@ -446,7 +436,7 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
         mean_sim = np.mean(sim_values) if sim_values else 0.0
         std_sim = np.std(sim_values) if len(sim_values) > 1 else 0.0
         
-        row += f"{threshold:<10.6f} | {mean_sim:<6.6f} | {std_sim:.6f}"
+        row += f"{mean_sim:<6.6f} | {std_sim:.6f}"
         print(row)
     
     print("-" * 80)
@@ -506,25 +496,23 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
     with open(csv_path2, 'w', newline='') as f:
         writer = csv.writer(f)
         # Header
-        header = ['Round', 'Threshold'] + [f"Client_{cid}_{'A' if cid in attacker_ids_set else 'B'}" 
+        header = ['Round'] + [f"Client_{cid}_{'A' if cid in attacker_ids_set else 'B'}" 
                                            for cid in all_client_ids] + ['Mean', 'Std']
         writer.writerow(header)
         
         for log in server_log_data:
             round_num = log['round']
-            defense = log.get('defense', {})
-            similarities = defense.get('similarities', [])
-            threshold = defense.get('threshold', 0.0)
-            accepted = defense.get('accepted_clients', [])
-            rejected = defense.get('rejected_clients', [])
+            aggregation = log.get('aggregation', {})
+            similarities = aggregation.get('similarities', [])
+            accepted = aggregation.get('accepted_clients', [])
             
-            all_clients_round = sorted(set(accepted + rejected))
+            all_clients_round = sorted(set(accepted))
             sim_map = {}
             if len(similarities) == len(all_clients_round):
                 for idx, cid in enumerate(all_clients_round):
                     sim_map[cid] = similarities[idx]
             
-            row = [round_num, f"{threshold:.6f}"]
+            row = [round_num]
             sim_values = []
             for cid in all_client_ids:
                 sim = sim_map.get(cid, 0.0)
@@ -676,14 +664,6 @@ def main():
         
         # ========== Graph Construction Parameters ==========
         'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)
-        
-        # ========== Defense Mechanism Parameters ==========
-        'enable_defense': False,  # Whether to enable defense mechanism (bool, True/False) Fasle for attack baseline experiment.
-                                    # Note: When False, defense filtering is disabled but Cosine Similarity and Euclidean Distance are still computed for visualization
-        'defense_threshold': 0.1,  # Base threshold for defense mechanism (float, lower = more strict)
-        'tolerance_factor': 3.0,  # Tolerance factor for defense mechanism (float, higher = more lenient). Baseline experiment uses 3.0.
-        'defense_high_rejection_threshold': 0.4,  # High rejection rate threshold for adaptive defense (float, 0.0-1.0)
-        'defense_threshold_decay': 0.9,  # Decay factor for defense threshold when high rejection detected (float, 0.0-1.0)
         
         # ========== Visualization ==========
         'generate_plots': True,  # Whether to generate visualization plots (bool)

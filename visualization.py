@@ -65,7 +65,6 @@ IEEE_COLORS = {
         '#8B0000',  # Dark Red (Attacker 7)
         '#A52A2A'   # Brown Red (Attacker 8)
     ],
-    'threshold': '#228B22',  # Forest green for threshold
     'global': '#0066CC'  # Professional blue for global accuracy
 }
 
@@ -159,7 +158,7 @@ class ExperimentVisualizer:
                                       num_attackers: Optional[int] = None):
         """
         Figure 4: Temporal evolution of cosine similarity for each LLM agent 
-        with dynamic detection threshold over communication rounds.
+        over communication rounds.
         
         Args:
             log_data: List of round logs
@@ -184,30 +183,25 @@ class ExperimentVisualizer:
                     for r in missing_rounds:
                         placeholder_log = last_log.copy()
                         placeholder_log['round'] = r
-                        placeholder_log['defense'] = last_log.get('defense', {}).copy()
+                        placeholder_log['aggregation'] = last_log.get('aggregation', {}).copy()
                         log_data.append(placeholder_log)
                     rounds = expected_rounds
                 print(f"     Padded {len(missing_rounds)} missing rounds")
         
         fig, ax = plt.subplots(figsize=(6.5, 5))
         
-        # Extract similarities and client info from defense logs
+        # Extract similarities and client info from aggregation logs
         # Build a mapping of client_id -> list of similarities over rounds
         client_similarities = {}  # {client_id: [sim1, sim2, ...]}
-        thresholds = []
         
         for log in log_data:
-            defense = log.get('defense', {})
-            similarities = defense.get('similarities', [])
-            accepted_clients = defense.get('accepted_clients', [])
-            rejected_clients = defense.get('rejected_clients', [])
-            threshold = defense.get('threshold', 0.0)
-            thresholds.append(threshold)
+            aggregation = log.get('aggregation', {})
+            similarities = aggregation.get('similarities', [])
+            accepted_clients = aggregation.get('accepted_clients', [])
             
             # Map similarities to client IDs
             # The similarities list is ordered by sorted client IDs (from aggregate_updates)
-            # Combine accepted and rejected to get all client IDs
-            all_client_ids = sorted(set(accepted_clients + rejected_clients))
+            all_client_ids = sorted(set(accepted_clients))
             
             # Ensure we have the same number of similarities as clients
             if len(similarities) != len(all_client_ids):
@@ -250,14 +244,7 @@ class ExperimentVisualizer:
         attacker_clients = [{'id': cid, 'sims': client_similarities[cid]} 
                            for cid in all_ids if cid in attacker_ids_set]
         
-        # Align thresholds with rounds length (do this before plotting for consistency)
-        if len(thresholds) < len(rounds):
-            thresholds = thresholds + [thresholds[-1] if len(thresholds) > 0 else 0.0] * (len(rounds) - len(thresholds))
-        elif len(thresholds) > len(rounds):
-            thresholds = thresholds[:len(rounds)]
-        
         # Collect all similarity values for adaptive y-axis range (before plotting)
-        # Use aligned data to ensure accuracy
         all_similarity_values = []
         
         # Process benign clients - align and collect data
@@ -284,10 +271,6 @@ class ExperimentVisualizer:
             if len(sims) == len(rounds):
                 all_similarity_values.extend(sims)
                 aligned_attacker_data.append({'id': client['id'], 'sims': sims})
-        
-        # Also include thresholds
-        if len(thresholds) == len(rounds):
-            all_similarity_values.extend(thresholds)
         
         # Calculate adaptive y-axis range with padding
         if all_similarity_values:
@@ -331,11 +314,6 @@ class ExperimentVisualizer:
                    marker=marker, markersize=4, markevery=max(1, len(rounds)//15),
                    label=f'Attacker {client_data["id"]+1}', zorder=2,
                    markerfacecolor=color, markeredgecolor='white', markeredgewidth=0.5)
-        
-        # Plot defense threshold - IEEE style dashed line
-        if len(thresholds) == len(rounds):
-            ax.plot(rounds, thresholds, '--', color=IEEE_COLORS['threshold'], 
-                   linewidth=2, label='Threshold', zorder=1, alpha=0.8)
         
         # IEEE-style axes (y-axis range already calculated above)
         ax.set_xlabel('Episodes', fontsize=11, fontweight='normal')
@@ -397,27 +375,25 @@ class ExperimentVisualizer:
                     for r in missing_rounds:
                         placeholder_log = last_log.copy()
                         placeholder_log['round'] = r
-                        placeholder_log['defense'] = last_log.get('defense', {}).copy()
+                        placeholder_log['aggregation'] = last_log.get('aggregation', {}).copy()
                         log_data.append(placeholder_log)
                     rounds = expected_rounds
                 print(f"     Padded {len(missing_rounds)} missing rounds")
         
         fig, ax = plt.subplots(figsize=(6.5, 5))
         
-        # Extract Euclidean distances and client info from defense logs
+        # Extract Euclidean distances and client info from aggregation logs
         # Build a mapping of client_id -> list of distances over rounds
         client_distances = {}  # {client_id: [dist1, dist2, ...]}
         
         for log in log_data:
-            defense = log.get('defense', {})
-            euclidean_distances = defense.get('euclidean_distances', [])
-            accepted_clients = defense.get('accepted_clients', [])
-            rejected_clients = defense.get('rejected_clients', [])
+            aggregation = log.get('aggregation', {})
+            euclidean_distances = aggregation.get('euclidean_distances', [])
+            accepted_clients = aggregation.get('accepted_clients', [])
             
             # Map distances to client IDs
             # The euclidean_distances list is ordered by sorted client IDs (from aggregate_updates)
-            # Combine accepted and rejected to get all client IDs
-            all_client_ids = sorted(set(accepted_clients + rejected_clients))
+            all_client_ids = sorted(set(accepted_clients))
             
             # Ensure we have the same number of distances as clients
             if len(euclidean_distances) != len(all_client_ids):
@@ -713,8 +689,8 @@ class ExperimentVisualizer:
                     # Create a copy to avoid modifying original data
                     server_log_data = server_log_data[:num_rounds]
         
-        # Figure 1: Global Accuracy, Stability, Rejection Rate (from attack experiment)
-        print("\n📊 Generating Figure 1: Global Accuracy, Stability, Rejection Rate...")
+        # Figure 1: Global Accuracy Stability (from attack experiment)
+        print("\n📊 Generating Figure 1: Global Accuracy Stability...")
         self.plot_figure3_global_accuracy_stability(
             server_log_data,
             save_path=self.results_dir / f'{experiment_name}_figure1.png',
