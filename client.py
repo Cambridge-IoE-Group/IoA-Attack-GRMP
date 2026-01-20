@@ -70,9 +70,13 @@ class Client:
         Note: All parameters must be explicitly provided. Default values are removed to prevent
         inconsistencies with config settings. See main.py for proper usage.
         
+        Memory optimization: Model is kept in CPU by default to save GPU memory.
+        It will be moved to GPU only during training (for benign clients) or proxy loss calculation (for attackers).
         """
         self.client_id = client_id
         self.model = copy.deepcopy(model)
+        # Keep model in CPU initially to save GPU memory
+        # Will be moved to GPU only when needed (training or proxy loss calculation)
         self.data_loader = data_loader
         self.lr = lr
         self.local_epochs = local_epochs
@@ -83,11 +87,11 @@ class Client:
             self.device = torch.device('cuda:0')
         else:
             self.device = torch.device('cpu')
-        self.model.to(self.device)
-        self.optimizer = None
+        # Do NOT move model to GPU here - will be moved on-demand
+        self.optimizer = None  # Will be created when needed
         self.current_round = 0
         self.is_attacker = False
-        self._model_on_gpu = True
+        self._model_on_gpu = False  # Track if model is currently on GPU
 
     def reset_optimizer(self):
         """Reset the optimizer. Only valid when model is on GPU."""
@@ -110,11 +114,18 @@ class Client:
             initial_params: Initial model parameters (flattened)
             
         Returns:
-            Model update tensor (flattened)
+            Model update tensor (flattened, on CPU)
+        
+        Note: Works on both CPU and GPU models. Returns CPU tensor to save GPU memory.
         """
         current_params = self.model.get_flat_params()
-        if current_params.device != initial_params.device:
-            initial_params = initial_params.to(current_params.device)
+        # Ensure both tensors are on the same device before subtraction
+        # initial_params is on CPU, so move current_params to CPU
+        if current_params.device.type == 'cuda':
+            current_params = current_params.cpu()
+        # Ensure initial_params is also on CPU (should already be, but double-check)
+        if initial_params.device.type == 'cuda':
+            initial_params = initial_params.cpu()
         update = current_params - initial_params
         return update
 
@@ -142,13 +153,21 @@ class BenignClient(Client):
         if epochs is None:
             epochs = self.local_epochs
             
+        # Move model to GPU for training
+        if not self._model_on_gpu:
+            self.model.to(self.device)
+            self._model_on_gpu = True
+            # Create optimizer when model is on GPU
+            # Only optimize trainable parameters (important for LoRA)
             if self.optimizer is None:
                 trainable_params = [p for p in self.model.parameters() if p.requires_grad]
                 self.optimizer = optim.Adam(trainable_params, lr=self.lr)
             
         self.model.train()
-        initial_params = self.model.get_flat_params().clone()
+        # Get initial params and move to CPU to save GPU memory
+        initial_params = self.model.get_flat_params().clone().cpu()
         
+        # Proximal regularization coefficient (paper formula (1): α ∈ [0,1])
         mu = self.alpha
 
         for epoch in range(epochs):
@@ -165,12 +184,17 @@ class BenignClient(Client):
                 labels = batch['labels'].to(self.device)
                 
                 outputs = self.model(input_ids, attention_mask)
+                # NewsClassifierModel returns logits directly
                 logits = outputs
                 
                 ce_loss = nn.CrossEntropyLoss()(logits, labels)
                 
+                # Add proximal regularization term
+                # Move initial_params to GPU temporarily for computation
                 current_params = self.model.get_flat_params()
-                proximal_term = mu * torch.norm(current_params - initial_params) ** 2
+                initial_params_gpu = initial_params.to(self.device)
+                proximal_term = mu * torch.norm(current_params - initial_params_gpu) ** 2
+                initial_params_gpu = None  # Release GPU reference
                 
                 loss = ce_loss + proximal_term
                 
@@ -186,7 +210,13 @@ class BenignClient(Client):
                 
                 pbar.set_postfix({'loss': loss.item()})
         
+        # Calculate update (will be on CPU)
         update = self.get_model_update(initial_params)
+        
+        # Move model back to CPU to free GPU memory
+        self.model.cpu()
+        self._model_on_gpu = False
+        # Delete optimizer to free its GPU memory (Adam states)
         del self.optimizer
         self.optimizer = None
         torch.cuda.empty_cache()  # Clear CUDA cache
@@ -400,7 +430,9 @@ class AttackerClient(Client):
             client_ids: Optional list of client IDs corresponding to each update.
                        If None, indices will be used as client IDs (fallback for backward compatibility)
         """
-        self.benign_updates = [u.detach().clone().to(self.device) for u in updates]
+        # Store detached copies on CPU to save GPU memory
+        # Updates will be moved to GPU only when needed for VGAE processing
+        self.benign_updates = [u.detach().clone().cpu() for u in updates]
         # Store corresponding client IDs for weighted average calculation
         if client_ids is not None:
             self.benign_update_client_ids = client_ids.copy()
@@ -419,7 +451,8 @@ class AttackerClient(Client):
             client_ids: List of attacker client IDs
             data_sizes: Dictionary mapping client_id to claimed_data_size (optional)
         """
-        self.other_attacker_updates = [u.detach().clone().to(self.device) for u in updates]
+        # Store detached copies on CPU to save GPU memory
+        self.other_attacker_updates = [u.detach().clone().cpu() for u in updates]
         self.other_attacker_client_ids = client_ids.copy() if client_ids else []
         
         # Store data sizes for weighted aggregation
@@ -446,13 +479,18 @@ class AttackerClient(Client):
         We use a greedy approach to find an approximate optimal selection.
         
         Returns:
-            List of selected benign updates
+            List of selected benign updates (on CPU to save GPU memory)
         """
         if not self.benign_updates:
             return []
         
-        benign_stack = torch.stack([u.detach() for u in self.benign_updates])
+        # Compute distances from weighted mean for all benign updates
+        # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean, not simple mean)
+        # Move to GPU only for computation, then back to CPU
+        benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
+        benign_stack = torch.stack([u.detach() for u in benign_updates_gpu])
         
+        # Compute weighted mean: w̄_i(t) = Σ (D_i/D) w_i(t)
         if self.total_data_size is not None and len(self.benign_data_sizes) > 0 and len(self.benign_update_client_ids) > 0:
             D_total = float(self.total_data_size)
             benign_mean = torch.zeros_like(benign_stack[0])
@@ -462,14 +500,19 @@ class AttackerClient(Client):
                     D_i = self.benign_data_sizes.get(client_id, 1.0)
                     weight = D_i / D_total
                 else:
+                    # Fallback: use equal weight if client_id not available
                     weight = 1.0 / len(self.benign_updates)
-                benign_mean = benign_mean + weight * benign_update
+                benign_mean = benign_mean + weight * benign_update.to(self.device)
         else:
+            # Fallback: use simple mean if data sizes not available
             benign_mean = benign_stack.mean(dim=0)
         
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
-        del benign_stack, benign_mean
+        # Clean up GPU references immediately
+        del benign_updates_gpu, benign_stack, benign_mean
+        torch.cuda.empty_cache()
         
+        # Always return all benign updates
         return self.benign_updates
     
     def _get_selected_benign_indices(self) -> List[int]:
@@ -480,8 +523,13 @@ class AttackerClient(Client):
         if not self.benign_updates:
             return []
         
-        benign_stack = torch.stack([u.detach() for u in self.benign_updates])
+        # Compute distances from weighted mean for all benign updates
+        # Paper definition: w̄_i(t) = Σ_{i=1}^I (D_i(t)/D(t)) w_i(t) (weighted mean, not simple mean)
+        # Move to GPU only for computation, then back to CPU
+        benign_updates_gpu = [u.to(self.device) for u in self.benign_updates]
+        benign_stack = torch.stack([u.detach() for u in benign_updates_gpu])
         
+        # Compute weighted mean: w̄_i(t) = Σ (D_i/D) w_i(t)
         if self.total_data_size is not None and len(self.benign_data_sizes) > 0 and len(self.benign_update_client_ids) > 0:
             D_total = float(self.total_data_size)
             benign_mean = torch.zeros_like(benign_stack[0])
@@ -491,14 +539,19 @@ class AttackerClient(Client):
                     D_i = self.benign_data_sizes.get(client_id, 1.0)
                     weight = D_i / D_total
                 else:
+                    # Fallback: use equal weight if client_id not available
                     weight = 1.0 / len(self.benign_updates)
-                benign_mean = benign_mean + weight * benign_update
+                benign_mean = benign_mean + weight * benign_update.to(self.device)
         else:
+            # Fallback: use simple mean if data sizes not available
             benign_mean = benign_stack.mean(dim=0)
         
         distances = torch.norm(benign_stack - benign_mean, dim=1).cpu().numpy()
-        del benign_stack, benign_mean
+        # Clean up GPU references immediately
+        del benign_updates_gpu, benign_stack, benign_mean
+        torch.cuda.empty_cache()
         
+        # Always return all indices
         return list(range(len(self.benign_updates)))
 
     def local_train(self, epochs=None) -> torch.Tensor:
@@ -940,10 +993,6 @@ class AttackerClient(Client):
             else:
                 global_params_gpu = self.global_model_params
             
-            # CRITICAL: Ensure malicious_update is also on target_device before addition
-            if malicious_update.device != global_params_gpu.device:
-                malicious_update = malicious_update.to(global_params_gpu.device)
-            
             candidate_params = global_params_gpu + malicious_update
             
             # CRITICAL: Check LoRA mode BEFORE processing to avoid unnecessary work
@@ -1021,23 +1070,8 @@ class AttackerClient(Client):
                     # Step 3: Construct full_params = base_params (constants) + lora_params (trainable)
                     # CRITICAL: base_params are detached constants (requires_grad=False),
                     #          lora_params maintain gradients (requires_grad=True)
-                    # CRITICAL: Ensure all params are on the same device (target_device) before merging
-                    full_params = {}
-                    # First, ensure base_params are on target_device
-                    for name, param in self.base_params.items():
-                        if not self._device_matches(param.device, target_device):
-                            full_params[name] = param.to(target_device)
-                        else:
-                            full_params[name] = param
-                    # Then, add LoRA params (which should already be on target_device from candidate_lora_flat)
-                    # But check device consistency anyway
-                    for name, param in lora_params.items():
-                        if not self._device_matches(param.device, target_device):
-                            # CRITICAL: Cannot modify lora_params directly (it's a dict from view/reshape)
-                            # So we create a new tensor on the correct device
-                            full_params[name] = param.to(target_device)
-                        else:
-                            full_params[name] = param
+                    full_params = dict(self.base_params)  # Shallow copy of base params (detached)
+                    full_params.update(lora_params)  # Add LoRA params (with gradients)
                     
                     # Step 4: Ensure base_buffers are on correct device
                     # Buffers are constants (e.g., batch norm running means), no gradients needed
@@ -1291,12 +1325,6 @@ class AttackerClient(Client):
         threshold = float(self.graph_threshold) if isinstance(self.graph_threshold, (int, float)) else 0.5
         adj_matrix = (adj_matrix > threshold).float()
         
-        # CRITICAL: Ensure adj_matrix is on the same device as input
-        # All operations should preserve device, but verify explicitly
-        target_device = reduced_features.device
-        if adj_matrix.device != target_device:
-            adj_matrix = adj_matrix.to(target_device)
-        
         return adj_matrix
 
     def _train_vgae(self, adj_matrix: torch.Tensor, feature_matrix: torch.Tensor, epochs=None) -> torch.Tensor:
@@ -1371,12 +1399,7 @@ class AttackerClient(Client):
             loss.backward()
             self.vgae_optimizer.step()
         
-        # CRITICAL: Ensure adj_recon is on self.device before returning
-        # VGAE model is on self.device, so adj_recon should be too, but verify explicitly
-        adj_recon_detached = adj_recon.detach()
-        if adj_recon_detached.device != self.device:
-            adj_recon_detached = adj_recon_detached.to(self.device)
-        return adj_recon_detached  # Return reconstructed adjacency for GSP
+        return adj_recon.detach()  # Return reconstructed adjacency for GSP
 
     def set_global_model_params(self, global_params: torch.Tensor):
         """
@@ -1527,6 +1550,28 @@ class AttackerClient(Client):
                                    other_attacker_updates_list: List[torch.Tensor] = None,
                                    other_attacker_updates_gpu: List[torch.Tensor] = None,
                                    other_attacker_updates: List[torch.Tensor] = None) -> Tuple[torch.Tensor, float, List[float]]:
+        # #region agent log
+        import json
+        try:
+            with open('/Users/hanlincai/Desktop/Github/IoA-Attack-GRMP/.cursor/debug.log', 'a') as f:
+                log_entry = {
+                    "id": f"log_{int(__import__('time').time())}_{id(self)}",
+                    "timestamp": int(__import__('time').time() * 1000),
+                    "location": "client.py:1552",
+                    "message": "_aggregate_update_no_beta called",
+                    "data": {
+                        "client_id": getattr(self, 'client_id', None),
+                        "has_other_attacker_updates": other_attacker_updates is not None,
+                        "has_other_attacker_updates_list": other_attacker_updates_list is not None,
+                        "has_other_attacker_updates_gpu": other_attacker_updates_gpu is not None
+                    },
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": "A"
+                }
+                f.write(json.dumps(log_entry) + '\n')
+        except: pass
+        # #endregion
         # Handle legacy parameter name: other_attacker_updates -> other_attacker_updates_list
         if other_attacker_updates is not None and other_attacker_updates_list is None:
             other_attacker_updates_list = other_attacker_updates
@@ -1550,6 +1595,8 @@ class AttackerClient(Client):
             w_att: attacker weight (D_att / D_eff)
             w_ben: list of benign weights [D_i / D_eff]
         """
+        # ===== CRITICAL: Use GPU versions if available to avoid device transfers =====
+        # Prefer GPU versions to maintain computation graph integrity
         if benign_updates_gpu is not None and len(benign_updates_gpu) > 0:
             benign_updates_to_use = benign_updates_gpu
         elif benign_updates is not None and len(benign_updates) > 0:
@@ -1558,7 +1605,6 @@ class AttackerClient(Client):
             benign_updates_to_use = self.benign_updates if hasattr(self, 'benign_updates') else []
         
         device = malicious_update.device
-        benign_updates_to_use = [u.to(device) if u.device != device else u for u in benign_updates_to_use]
         D_att = float(self.claimed_data_size)
         
         # Collect benign data sizes
@@ -1580,6 +1626,8 @@ class AttackerClient(Client):
             D_list.append(D_i)
             D_sum += D_i
         
+        # ===== CRITICAL: Use GPU versions if available to avoid device transfers =====
+        # Prefer GPU versions to maintain computation graph integrity
         if benign_updates_gpu is not None and len(benign_updates_gpu) > 0:
             benign_updates_to_use = benign_updates_gpu
         elif benign_updates is not None:
@@ -1587,8 +1635,8 @@ class AttackerClient(Client):
         else:
             benign_updates_to_use = self.benign_updates
         
+        # Determine device from malicious_update (should already be on target device)
         device = malicious_update.device
-        benign_updates_to_use = [u.to(device) if u.device != device else u for u in benign_updates_to_use]
         
         # ===== NEW: Include other attackers' updates for coordinated optimization =====
         # CRITICAL: Do NOT shadow the input parameter other_attacker_updates_list
@@ -1639,114 +1687,53 @@ class AttackerClient(Client):
         # Aggregate updates: Δ_g = Σ w_i * Δ_i + Σ w_j * Δ_j + w_att * Δ_att
         agg = torch.zeros_like(malicious_update, device=device).view(-1)
         
+        # Add benign updates (GPU versions should already be on correct device)
+        # CRITICAL: In optimization loop, GPU versions are pre-transferred to target_device
+        # For final check (after GPU cleanup), allow device conversion to match malicious_update
         for w, benign_update in zip(w_ben, benign_updates_to_use):
+            # In optimization loop: strict device check (GPU versions should match)
+            # After optimization: allow conversion (final check uses CPU versions)
             if benign_update.device != device:
-                benign_update = benign_update.to(device)
+                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
+                # Check if we're in final check phase (GPU caches don't exist)
+                if not (hasattr(self, 'benign_updates_gpu') and len(getattr(self, 'benign_updates_gpu', [])) > 0):
+                    # Final check phase: allow conversion
+                    benign_update = benign_update.to(device)
+                else:
+                    # Optimization loop: strict check (should not happen)
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
+                        f"benign_update on {benign_update.device}, expected {device}. "
+                        f"This should not happen if GPU versions are created correctly."
+                    )
             agg = agg + w * benign_update.view(-1)
         
+        # ===== NEW: Add other attackers' updates =====
+        # CRITICAL: In optimization loop, GPU versions are pre-transferred to target_device
+        # For final check (after GPU cleanup), allow device conversion to match malicious_update
         for w, other_attacker_update in zip(w_other_att, other_updates_to_use):
+            # In optimization loop: strict device check (GPU versions should match)
+            # After optimization: allow conversion (final check uses CPU versions)
             if other_attacker_update.device != device:
-                other_attacker_update = other_attacker_update.to(device)
+                # Allow conversion only if not in optimization loop (GPU caches cleaned up)
+                # Check if we're in final check phase (GPU caches don't exist)
+                if not (hasattr(self, 'other_attacker_updates_gpu') and len(getattr(self, 'other_attacker_updates_gpu', [])) > 0):
+                    # Final check phase: allow conversion
+                    other_attacker_update = other_attacker_update.to(device)
+                else:
+                    # Optimization loop: strict check (should not happen)
+                    raise RuntimeError(
+                        f"[Attacker {self.client_id}] CRITICAL: Device mismatch in optimization loop! "
+                        f"other_attacker_update on {other_attacker_update.device}, expected {device}. "
+                        f"This should not happen if GPU versions are created correctly."
+                    )
             agg = agg + w * other_attacker_update.view(-1)
+        # ==============================================
         
         # Add current attacker's update
         agg = agg + w_att * malicious_update.view(-1)
         
         return agg.view(-1), w_att, w_ben
-    
-    def _aggregate_updates_with_filter(self, 
-                                       benign_updates: List[torch.Tensor],
-                                       benign_client_ids: List[int],
-                                       benign_data_sizes: Dict[int, float],
-                                       other_attacker_updates: List[torch.Tensor] = None,
-                                       other_attacker_client_ids: List[int] = None,
-                                       other_attacker_data_sizes: Dict[int, float] = None,
-                                       include_client_ids: List[int] = None,
-                                       exclude_client_ids: List[int] = None,
-                                       normalize_over_included: bool = False,
-                                       total_data_size: float = None,
-                                       device=None) -> torch.Tensor:
-        """
-        General aggregation helper with explicit include/exclude sets and two weight modes.
-        
-        Args:
-            benign_updates: List of benign updates
-            benign_client_ids: List of benign client IDs
-            benign_data_sizes: Dict mapping benign client_id to data size
-            other_attacker_updates: List of other attacker updates (optional)
-            other_attacker_client_ids: List of other attacker client IDs (optional)
-            other_attacker_data_sizes: Dict mapping attacker client_id to data size (optional)
-            include_client_ids: Explicit list of client IDs to include (None = include all)
-            exclude_client_ids: Explicit list of client IDs to exclude (None = exclude none)
-            normalize_over_included: If True, normalize weights over included participants only
-                                     If False, use server-style weights (D_k / D_total)
-            total_data_size: Total data size for server-style weights (required if normalize_over_included=False)
-            device: Target device (None = use first update's device)
-        
-        Returns:
-            Aggregated update tensor
-        """
-        if len(benign_updates) == 0 and (other_attacker_updates is None or len(other_attacker_updates) == 0):
-            if device is None:
-                device = self.device
-            return torch.zeros(self._flat_numel, device=device)
-        
-        if device is None:
-            if len(benign_updates) > 0:
-                device = benign_updates[0].device
-            elif other_attacker_updates is not None and len(other_attacker_updates) > 0:
-                device = other_attacker_updates[0].device
-            else:
-                device = self.device
-        
-        updates_dict = {}
-        data_sizes_dict = {}
-        
-        # Add benign updates
-        for idx, update in enumerate(benign_updates):
-            client_id = benign_client_ids[idx] if idx < len(benign_client_ids) else idx
-            if include_client_ids is None or client_id in include_client_ids:
-                if exclude_client_ids is None or client_id not in exclude_client_ids:
-                    updates_dict[client_id] = update.to(device) if update.device != device else update
-                    data_sizes_dict[client_id] = benign_data_sizes.get(client_id, 1.0)
-        
-        # Add other attacker updates
-        if other_attacker_updates is not None and other_attacker_client_ids is not None:
-            for idx, update in enumerate(other_attacker_updates):
-                if idx < len(other_attacker_client_ids):
-                    client_id = other_attacker_client_ids[idx]
-                    if include_client_ids is None or client_id in include_client_ids:
-                        if exclude_client_ids is None or client_id not in exclude_client_ids:
-                            updates_dict[client_id] = update.to(device) if update.device != device else update
-                            if other_attacker_data_sizes is not None:
-                                data_sizes_dict[client_id] = other_attacker_data_sizes.get(client_id, self.claimed_data_size)
-                            else:
-                                data_sizes_dict[client_id] = self.claimed_data_size
-        
-        if len(updates_dict) == 0:
-            return torch.zeros(self._flat_numel, device=device)
-        
-        # Compute weights
-        if normalize_over_included:
-            # Normalize over included participants only (for benign-only aggregation)
-            included_sum = sum(data_sizes_dict.values())
-            denom = included_sum + 1e-12
-            weights_dict = {cid: D / denom for cid, D in data_sizes_dict.items()}
-        else:
-            # Server-style weights: D_k / D_total (requires total_data_size)
-            if total_data_size is None:
-                raise ValueError("total_data_size required when normalize_over_included=False")
-            denom = total_data_size + 1e-12
-            weights_dict = {cid: D / denom for cid, D in data_sizes_dict.items()}
-        
-        # Aggregate
-        first_update = next(iter(updates_dict.values()))
-        agg = torch.zeros_like(first_update.view(-1))
-        for client_id, update in updates_dict.items():
-            weight = weights_dict[client_id]
-            agg = agg + weight * update.view(-1)
-        
-        return agg.view(-1)
     
     def _aggregate_benign_only(self, benign_updates: List[torch.Tensor], device=None) -> torch.Tensor:
         """
@@ -1758,7 +1745,7 @@ class AttackerClient(Client):
         Aggregated update:
             Δ_g_benign = Σ_i (D_i / D_benign_sum) * Δ_i
         
-        where D_benign_sum = Σ D_i (only benign clients). Weights are normalized over benign only.
+        where D_benign_sum = Σ D_i (only benign clients).
         
         Args:
             benign_updates: List of all benign updates Δ_i
@@ -1768,28 +1755,53 @@ class AttackerClient(Client):
             aggregated_update: Δ_g_benign (aggregated update from benign clients only)
         """
         if len(benign_updates) == 0:
+            # Return zero tensor if no benign updates
+            # This should not happen in practice, but handle gracefully
             target_device = device if device is not None else self.device
-            return torch.zeros(self._flat_numel, device=target_device)
+            return torch.zeros(1, device=target_device)
         
         if device is None:
             device = benign_updates[0].device
+        else:
+            device = device
+        D_list = []
+        D_sum = 0.0
         
-        benign_client_ids = self.benign_update_client_ids if hasattr(self, 'benign_update_client_ids') else list(range(len(benign_updates)))
-        benign_data_sizes = self.benign_data_sizes if hasattr(self, 'benign_data_sizes') else {}
+        # Collect benign data sizes
+        for idx in range(len(benign_updates)):
+            # Get client_id from benign_update_client_ids if available
+            if hasattr(self, 'benign_update_client_ids') and idx < len(self.benign_update_client_ids):
+                client_id = self.benign_update_client_ids[idx]
+            else:
+                client_id = idx  # Fallback to index
+            
+            # Get data size for this client
+            if hasattr(self, 'benign_data_sizes') and client_id in self.benign_data_sizes:
+                D_i = float(self.benign_data_sizes[client_id])
+            else:
+                D_i = 1.0  # Fallback
+            
+            D_list.append(D_i)
+            D_sum += D_i
         
-        return self._aggregate_updates_with_filter(
-            benign_updates=benign_updates,
-            benign_client_ids=benign_client_ids,
-            benign_data_sizes=benign_data_sizes,
-            other_attacker_updates=None,
-            other_attacker_client_ids=None,
-            other_attacker_data_sizes=None,
-            include_client_ids=None,
-            exclude_client_ids=None,
-            normalize_over_included=True,  # Normalize weights over benign only
-            total_data_size=None,  # Not needed for benign-only normalization
-            device=device
-        )
+        # Compute weights (only benign)
+        denom = D_sum + 1e-12
+        w_ben = [D_i / denom for D_i in D_list]
+        
+        # Aggregate updates: Δ_g_benign = Σ w_i * Δ_i (only benign)
+        # Get shape from first update, but place on target device
+        first_update_shape = benign_updates[0].shape
+        agg = torch.zeros(first_update_shape, device=device).view(-1)
+        
+        # Add benign updates only
+        # OPTIMIZATION: Check device before converting (avoid unnecessary .to() calls)
+        for w, benign_update in zip(w_ben, benign_updates):
+            # Only convert if device mismatch (PyTorch optimizes .to() on same device, but explicit check is clearer)
+            if benign_update.device != device:
+                benign_update = benign_update.to(device)
+            agg = agg + w * benign_update.view(-1)
+        
+        return agg.view(-1)
     
     def _aggregate_global_reference(self, benign_updates: List[torch.Tensor],
                                     other_attacker_updates: List[torch.Tensor] = None,
@@ -1994,26 +2006,14 @@ class AttackerClient(Client):
             Dictionary with statistics: mean, std, min, max, median
         """
         # Compute aggregated update from BENIGN CLIENTS ONLY (ensures consistent sim_T across attackers)
-        # CRITICAL: Determine device from benign_updates or malicious_update
-        # If malicious_update is provided and on GPU, use that device; otherwise use first benign_update's device
-        if len(benign_updates) > 0:
-            target_device = benign_updates[0].device
-        elif malicious_update is not None:
-            target_device = malicious_update.device
-        else:
-            target_device = self.device
-        
-        aggregated_update = self._aggregate_benign_only(benign_updates, device=target_device)
+        aggregated_update = self._aggregate_benign_only(benign_updates, device=None)
         aggregated_flat = aggregated_update.view(-1)
         device = aggregated_flat.device
         
         # Compute similarity for each benign update
         benign_similarities = []
         for benign_update in benign_updates:
-            benign_flat = benign_update.view(-1)
-            # CRITICAL: Ensure benign_update is on the same device as aggregated_update
-            if benign_flat.device != device:
-                benign_flat = benign_flat.to(device)
+            benign_flat = benign_update.view(-1).to(device)
             sim = torch.cosine_similarity(
                 benign_flat.unsqueeze(0),
                 aggregated_flat.unsqueeze(0),
@@ -2066,11 +2066,10 @@ class AttackerClient(Client):
         aggregated_flat = benign_ref_update.view(-1)
         device = aggregated_flat.device
         
+        # Compute distance for each benign update
         benign_distances = []
         for benign_update in benign_updates:
-            benign_flat = benign_update.view(-1)
-            if benign_flat.device != device:
-                benign_flat = benign_flat.to(device)
+            benign_flat = benign_update.view(-1).to(device)
             diff = benign_flat - aggregated_flat
             dist = torch.norm(diff)
             benign_distances.append(dist)
@@ -2098,105 +2097,33 @@ class AttackerClient(Client):
     def _compute_global_loss(self, malicious_update: torch.Tensor, 
                             benign_updates: List[torch.Tensor] = None,
                             benign_updates_gpu: List[torch.Tensor] = None,
-                            other_attacker_updates_gpu: List[torch.Tensor] = None,
-                            use_loo_aggregation: bool = True) -> torch.Tensor:
+                            other_attacker_updates_gpu: List[torch.Tensor] = None) -> torch.Tensor:
         """
         Compute global loss F(w'_g) where w'_g = w_g + Δ_g (aggregated update).
         
-        Uses LOO (Leave-One-Out) aggregation for objective:
-        Δ_g_final^{(j)} = Δ_g_loo^{(-j)} + (D_j / D_total) * Δ_att^{(j)}
-        where Δ_g_loo^{(-j)} aggregates all participants except attacker j.
+        This is the CORRECT interpretation: optimize loss of the aggregated global model,
+        not individual client models.
+        
+        Objective: maximize F(w_g + Δ_g) where Δ_g is the FedAvg aggregated update.
         
         Args:
-            malicious_update: Δ_att^{(j)} (attacker j's update, should be on target device)
-            benign_updates: List of benign updates (fallback)
-            benign_updates_gpu: List of benign updates (preferred)
-            other_attacker_updates_gpu: List of other attacker updates (preferred)
-            use_loo_aggregation: If True, use LOO aggregation; if False, use old method (backward compat)
+            malicious_update: Δ_att (attacker's update, should be on target device)
+            benign_updates: List of benign updates (CPU, fallback)
+            benign_updates_gpu: List of benign updates (GPU, preferred)
+            other_attacker_updates_gpu: List of other attacker updates (GPU, preferred)
         
         Returns:
             Proxy for F(w'_g) to be maximized
         """
-        device = malicious_update.device
+        # Compute aggregated update Δ_g
+        aggregated_update, _, _ = self._aggregate_update_no_beta(
+            malicious_update,
+            benign_updates=benign_updates,
+            benign_updates_gpu=benign_updates_gpu,
+            other_attacker_updates_gpu=other_attacker_updates_gpu
+        )
         
-        if use_loo_aggregation:
-            # LOO aggregation: exclude current attacker, then add with correct weight
-            # CRITICAL: Ensure all updates are on the target device (GPU)
-            if benign_updates_gpu is not None and len(benign_updates_gpu) > 0:
-                benign_updates_to_use = benign_updates_gpu
-            elif benign_updates is not None and len(benign_updates) > 0:
-                # Convert CPU updates to GPU if needed
-                benign_updates_to_use = [u.to(device) if u.device != device else u for u in benign_updates]
-            elif hasattr(self, 'benign_updates') and len(self.benign_updates) > 0:
-                # Convert CPU updates to GPU if needed
-                benign_updates_to_use = [u.to(device) if u.device != device else u for u in self.benign_updates]
-            else:
-                benign_updates_to_use = []
-            
-            if other_attacker_updates_gpu is not None and len(other_attacker_updates_gpu) > 0:
-                other_attacker_updates_to_use = other_attacker_updates_gpu
-            elif hasattr(self, 'other_attacker_updates') and len(self.other_attacker_updates) > 0:
-                # Convert CPU updates to GPU if needed
-                other_attacker_updates_to_use = [u.to(device) if u.device != device else u for u in self.other_attacker_updates]
-            else:
-                other_attacker_updates_to_use = []
-            
-            # Compute total data size D_total (includes ALL participants: benign + all attackers including current)
-            # This must match server's total data size for correct weighting
-            D_total = 0.0
-            if len(benign_updates_to_use) > 0:
-                for idx in range(len(benign_updates_to_use)):
-                    client_id = self.benign_update_client_ids[idx] if (hasattr(self, 'benign_update_client_ids') and idx < len(self.benign_update_client_ids)) else idx
-                    D_i = self.benign_data_sizes.get(client_id, 1.0) if hasattr(self, 'benign_data_sizes') else 1.0
-                    D_total += D_i
-            if other_attacker_updates_to_use is not None and len(other_attacker_updates_to_use) > 0:
-                for idx, cid in enumerate(self.other_attacker_client_ids if hasattr(self, 'other_attacker_client_ids') else []):
-                    if idx < len(other_attacker_updates_to_use):
-                        D_j = self.other_attacker_data_sizes.get(cid, self.claimed_data_size) if hasattr(self, 'other_attacker_data_sizes') else self.claimed_data_size
-                        D_total += D_j
-            # Add current attacker's data size
-            D_self = float(self.claimed_data_size)
-            D_total += D_self
-            
-            # Exclude current attacker from LOO aggregation
-            exclude_current_attacker = [self.client_id]
-            
-            # Build Δ_g_loo^{(-j)} excluding current attacker, using server-style weights
-            delta_g_loo = self._aggregate_updates_with_filter(
-                benign_updates=benign_updates_to_use,
-                benign_client_ids=self.benign_update_client_ids if hasattr(self, 'benign_update_client_ids') else list(range(len(benign_updates_to_use))),
-                benign_data_sizes=self.benign_data_sizes if hasattr(self, 'benign_data_sizes') else {},
-                other_attacker_updates=other_attacker_updates_to_use,
-                other_attacker_client_ids=self.other_attacker_client_ids if hasattr(self, 'other_attacker_client_ids') else [],
-                other_attacker_data_sizes=self.other_attacker_data_sizes if hasattr(self, 'other_attacker_data_sizes') else {},
-                exclude_client_ids=exclude_current_attacker,
-                normalize_over_included=False,  # Use server-style weights: D_k / D_total
-                total_data_size=D_total,
-                device=device
-            )
-            
-            # Construct final aggregation: Δ_g_final^{(j)} = Δ_g_loo^{(-j)} + (D_j / D_total) * Δ_att^{(j)}
-            w_self = D_self / (D_total + 1e-12)
-            # CRITICAL: Ensure malicious_update is on the same device as delta_g_loo before addition
-            if malicious_update.device != delta_g_loo.device:
-                malicious_update = malicious_update.to(delta_g_loo.device)
-            delta_g_final = delta_g_loo + w_self * malicious_update.view(-1)
-            
-            aggregated_update = delta_g_final
-        else:
-            # Old method (backward compatibility)
-            aggregated_update, _, _ = self._aggregate_update_no_beta(
-                malicious_update,
-                benign_updates=benign_updates,
-                benign_updates_gpu=benign_updates_gpu,
-                other_attacker_updates_gpu=other_attacker_updates_gpu
-            )
-        
-        # Compute loss on aggregated model: F(w_g + Δ_g_final)
-        # CRITICAL: Ensure aggregated_update is on the correct device before calling _proxy_global_loss
-        # _proxy_global_loss will handle device conversion internally, but we ensure it here for safety
-        if aggregated_update.device != device:
-            aggregated_update = aggregated_update.to(device)
+        # Compute loss on aggregated model: F(w_g + Δ_g)
         return self._proxy_global_loss(
             aggregated_update,
             max_batches=self.proxy_max_batches_opt,
@@ -2268,14 +2195,8 @@ class AttackerClient(Client):
         if M <= 0:
             raise ValueError(f"[Attacker {self.client_id}] Invalid M dimension: {M}")
         
-        # CRITICAL: Ensure all tensors are on the same device before matrix operations
-        target_device = feature_matrix.device
-        
         # Step 1: Compute Laplacian of original graph
         # L = diag(A·1) - A
-        # CRITICAL: Ensure adj_orig is on the same device as feature_matrix
-        if adj_orig.device != target_device:
-            adj_orig = adj_orig.to(target_device)
         degree_orig = adj_orig.sum(dim=1)
         L_orig = torch.diag(degree_orig) - adj_orig  # (M, M)
         
@@ -2284,32 +2205,17 @@ class AttackerClient(Client):
         try:
             U_orig, S_orig, Vh_orig = torch.linalg.svd(L_orig, full_matrices=True)
             B_orig = U_orig  # GFT basis (M, M)
-            # CRITICAL: Explicitly ensure B_orig is on target_device after SVD
-            # SVD may sometimes return CPU tensors even if input is on GPU
-            if B_orig.device != target_device:
-                B_orig = B_orig.to(target_device)
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD failed: {e}, using zero fallback")
-            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Step 3: Compute GFT coefficient matrix
         # S = F · B where F ∈ R^{I×M}, B ∈ R^{M×M}
-        # CRITICAL: Ensure all tensors are on target_device before matrix multiplication
-        if feature_matrix.device != target_device:
-            feature_matrix = feature_matrix.to(target_device)
-        if B_orig.device != target_device:
-            B_orig = B_orig.to(target_device)
         S = torch.mm(feature_matrix, B_orig)  # (I, M)
-        # CRITICAL: Ensure S is on target_device (should be, but verify)
-        if S.device != target_device:
-            S = S.to(target_device)
         
         # Step 4: Compute Laplacian of reconstructed graph
         # L̂ = diag(Â·1) - Â
-        # CRITICAL: Ensure adj_recon is on the same device
-        if adj_recon.device != target_device:
-            adj_recon = adj_recon.to(target_device)
         degree_recon = adj_recon.sum(dim=1)
         L_recon = torch.diag(degree_recon) - adj_recon  # (M, M)
         
@@ -2317,29 +2223,13 @@ class AttackerClient(Client):
         try:
             U_recon, S_recon, Vh_recon = torch.linalg.svd(L_recon, full_matrices=True)
             B_recon = U_recon  # New GFT basis (M, M)
-            # CRITICAL: Explicitly ensure B_recon is on target_device after SVD
-            # SVD may sometimes return CPU tensors even if input is on GPU
-            if B_recon.device != target_device:
-                B_recon = B_recon.to(target_device)
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD of recon failed: {e}, using zero fallback")
-            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Step 6: Generate reconstructed feature matrix
         # F̂ = S · B̂^T where S ∈ R^{I×M}, B̂ ∈ R^{M×M}
-        # CRITICAL: Ensure all tensors are on target_device before matrix multiplication
-        # Double-check S is on target_device (should be from Step 3, but verify)
-        if S.device != target_device:
-            S = S.to(target_device)
-        if B_recon.device != target_device:
-            B_recon = B_recon.to(target_device)
-        # Final verification before matrix multiplication
-        if S.device != B_recon.device:
-            raise RuntimeError(
-                f"[Attacker {self.client_id}] Device mismatch before F_recon calculation: "
-                f"S.device={S.device}, B_recon.device={B_recon.device}, target_device={target_device}"
-            )
         F_recon = torch.mm(S, B_recon.t())  # (I, M)
         
         # Step 7: Generate malicious update
@@ -2353,7 +2243,7 @@ class AttackerClient(Client):
         if F_recon_rows == 0:
             # Empty feature matrix: return zeros
             print(f"    [Attacker {self.client_id}] F_recon is empty, using zero fallback")
-            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         # Select a vector from F̂ as the malicious update
         # Use client_id to select different vectors for different attackers (for diversity)
@@ -2382,12 +2272,7 @@ class AttackerClient(Client):
         # Generate perturbation with client_id and select_idx dependent scale
         # Scale increases with client_id and select_idx to ensure different perturbations
         perturbation_scale = self.gsp_perturbation_scale * (self.client_id + 1) * (1.0 + 0.1 * select_idx)
-        # CRITICAL: Ensure perturbation is on the same device as gsp_attack
-        # torch.randn_like creates tensor on the same device as input
         perturbation = torch.randn_like(gsp_attack) * perturbation_scale
-        # CRITICAL: Verify device match before addition
-        if perturbation.device != gsp_attack.device:
-            perturbation = perturbation.to(gsp_attack.device)
         gsp_attack = gsp_attack + perturbation
         
         # Restore random state
@@ -2406,7 +2291,7 @@ class AttackerClient(Client):
         if gsp_attack.numel() != M:
             # Size mismatch: create zeros with correct size
             print(f"    [Attacker {self.client_id}] GSP attack size mismatch: got {gsp_attack.numel()}, expected {M}, using zeros")
-            gsp_attack = torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
+            gsp_attack = torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
         
         return gsp_attack
 
@@ -2480,14 +2365,6 @@ class AttackerClient(Client):
         # STEP 4: GSP module to generate malicious update
         # Paper: "Use GSP module to obtain F̂, determine w'_j(t)"
         # ============================================================
-        # CRITICAL: Ensure all inputs are on self.device before calling _gsp_generate_malicious
-        if reduced_benign.device != self.device:
-            reduced_benign = reduced_benign.to(self.device)
-        if adj_matrix.device != self.device:
-            adj_matrix = adj_matrix.to(self.device)
-        if adj_recon.device != self.device:
-            adj_recon = adj_recon.to(self.device)
-        
         gsp_attack_reduced = self._gsp_generate_malicious(
             reduced_benign, adj_matrix, adj_recon, poisoned_update
         )
@@ -2609,23 +2486,14 @@ class AttackerClient(Client):
                 print(f"    [Attacker {self.client_id}] LoRA dimension check passed: "
                       f"global_params={global_numel}, _flat_numel={self._flat_numel}")
         proxy_lr = self.proxy_step
-        # CRITICAL: Ensure malicious_update is on correct device before creating perturbation
-        # malicious_update may be on CPU from GSP generation, but needs to be on GPU for optimization
-        target_device = torch.device('cuda:0') if self.device.type == 'cuda' else self.device
-        if malicious_update.device != target_device:
-            malicious_update = malicious_update.to(target_device)
-        
         # Add small client-specific perturbation to initial malicious_update to ensure diversity
         # This helps different attackers converge to different local optima
         if self.is_attacker:
             perturbation_scale = self.opt_init_perturbation_scale * (self.client_id + 1)  # Small scale, client-specific
             initial_perturbation = torch.randn_like(malicious_update) * perturbation_scale
-            # CRITICAL: Verify device match before addition
-            if initial_perturbation.device != malicious_update.device:
-                initial_perturbation = initial_perturbation.to(malicious_update.device)
-            proxy_param = (malicious_update + initial_perturbation).clone().detach().to(target_device)
+            proxy_param = (malicious_update + initial_perturbation).clone().detach().to(self.device)
         else:
-            proxy_param = malicious_update.clone().detach().to(target_device)
+            proxy_param = malicious_update.clone().detach().to(self.device)
         proxy_param.requires_grad_(True)
         proxy_opt = optim.Adam([proxy_param], lr=proxy_lr)
         
@@ -2691,9 +2559,21 @@ class AttackerClient(Client):
         # - Other attackers' updates affect the final aggregation, so should be considered in constraints
         # - Ensures optimization objective (global_loss) and constraints are consistent
         # =====================================================================================
-        # Note: global_ref_gpu is no longer needed since constraints use benign-only reference
-        # But keep for backward compatibility in case used elsewhere
+        # Compute global reference on CPU (for statistics and final check)
+        global_ref_cpu = self._aggregate_global_reference(
+            self.benign_updates,
+            other_attacker_updates=self.other_attacker_updates if hasattr(self, 'other_attacker_updates') else None,
+            other_attacker_updates_gpu=None,  # Use CPU versions for initial reference
+            device=torch.device('cpu')
+        )
+        # Compute global reference on GPU (for optimization loop constraints)
+        global_ref_gpu = global_ref_cpu.to(target_device).detach()  # Detached constant
+        global_ref_gpu.requires_grad_(False)  # Ensure no gradient tracking
+        # ============================================================================================
         
+        
+        # OPTIMIZATION 5: Cache Lagrangian multipliers on GPU before loop
+        # Ensure multipliers are on correct device to avoid repeated conversions
         if self.use_lagrangian_dual and self.lambda_dist is not None:
             if isinstance(self.lambda_dist, torch.Tensor):
                 if not self._device_matches(self.lambda_dist.device, target_device):
@@ -2701,6 +2581,7 @@ class AttackerClient(Client):
             else:
                 self.lambda_dist = torch.tensor(self.lambda_dist, device=target_device)
         
+        # Move similarity multipliers to target device
         if self.use_cosine_similarity_constraint:
             if self.lambda_sim_low is not None:
                 if isinstance(self.lambda_sim_low, torch.Tensor):
@@ -2716,20 +2597,46 @@ class AttackerClient(Client):
                 else:
                     self.lambda_sim_up = torch.tensor(self.lambda_sim_up, device=target_device)
         
+        # ============================================================
+        # Print initial optimization state
+        # ============================================================
         print(f"    [Attacker {self.client_id}] Preparing optimization: "
               f"proxy_param.shape={proxy_param.shape}, proxy_param.numel()={proxy_param.numel()}, "
               f"_flat_numel={self._flat_numel}, use_lora={use_lora}")
         
+        # ===== CRITICAL: Compute GLOBAL REFERENCE update for constraint judgement =====
+        # This is the stable reference point for ALL constraint calculations (distance and similarity)
+        # Key properties:
+        # 1. Includes benign + other attackers (NOT current attacker) - matches server aggregation context
+        # 2. Does NOT depend on proxy_param (independent of optimization variable)
+        # 3. Computed ONCE before loop (constant reference throughout optimization)
+        # 4. Same reference used for: constraints, statistics, initial/final checks
+        # 
+        # Why global reference (instead of benign-only)?
+        # - Makes constraints more realistic and aligned with server's final aggregation
+        # - Other attackers' updates affect the final aggregation, so should be considered in constraints
+        # - Ensures optimization objective (global_loss) and constraints are consistent
+        # =====================================================================================
+        # Compute global reference on CPU (for statistics and final check)
+        global_ref_cpu = self._aggregate_global_reference(
+            self.benign_updates,
+            other_attacker_updates=self.other_attacker_updates if hasattr(self, 'other_attacker_updates') else None,
+            other_attacker_updates_gpu=None,  # Use CPU versions for initial reference
+            device=torch.device('cpu')
+        )
+        # Compute global reference on GPU (for optimization loop constraints)
+        global_ref_gpu = global_ref_cpu.to(target_device).detach()  # Detached constant
+        global_ref_gpu.requires_grad_(False)  # Ensure no gradient tracking
+        # ============================================================================================
+        
         # Cache benign distance statistics before loop (for automatic d_T calculation)
         # Similar to similarity constraint: if d_T is None, use benign mean distance
         # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
-        # Threshold statistics MUST use benign-only reference (no attackers)
-        # CRITICAL: Use GPU versions for statistics if available, to avoid CPU/GPU transfers
-        benign_updates_for_stats = getattr(self, 'benign_updates_gpu', None) if (hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None) else self.benign_updates
-        if len(benign_updates_for_stats) > 0:
+        # NOTE: Statistics are still computed from benign-only, but constraints use global reference
+        if len(self.benign_updates) > 0:
             cached_benign_dist_stats = self._compute_benign_distance_statistics(
-                benign_updates_for_stats,
-                benign_ref_update=None  # Will compute benign-only aggregate internally
+                self.benign_updates,
+                global_ref_cpu  # Use global reference instead of proxy_param
             )
         else:
             cached_benign_dist_stats = None
@@ -2759,16 +2666,36 @@ class AttackerClient(Client):
         # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
         # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         # Compute this BEFORE initial state printing so we can include similarity info
-        # CRITICAL: Use GPU versions for statistics if available, to avoid CPU/GPU transfers
-        benign_updates_for_stats = getattr(self, 'benign_updates_gpu', None) if (hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None) else self.benign_updates
-        if self.use_cosine_similarity_constraint and len(benign_updates_for_stats) > 0:
+        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
             # Use initial proxy_param to compute reference statistics
             cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
-                benign_updates_for_stats,
+                self.benign_updates,
                 proxy_param.detach()
             )
         else:
             cached_benign_sim_stats = None
+        
+        # ===== OPTIMIZATION: Pre-compute benign_ref_gpu_sim to avoid repeated computation in loop =====
+        # This is a constant (doesn't depend on proxy_param), so compute once before loop
+        # Similar to global_ref_gpu, this avoids re-aggregating benign updates in each iteration
+        # CRITICAL: Compute this ONCE before loop, then reuse in optimization loop and initial state printing
+        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
+            if hasattr(self, 'benign_updates_gpu') and self.benign_updates_gpu is not None and len(self.benign_updates_gpu) > 0:
+                # Use pre-transferred GPU versions (already on target_device)
+                benign_ref_gpu_sim = self._aggregate_benign_only(
+                    self.benign_updates_gpu,
+                    device=target_device
+                ).detach()  # Detached constant
+            else:
+                # Fallback: transfer CPU versions to GPU (shouldn't happen if preprocessing is correct)
+                benign_ref_gpu_sim = self._aggregate_benign_only(
+                    [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
+                    device=target_device
+                ).detach()  # Detached constant
+            benign_ref_gpu_sim.requires_grad_(False)  # Ensure no gradient tracking
+        else:
+            benign_ref_gpu_sim = None
+        # ============================================================================================
         
         # Print initial state with dist_bound value (whether manual or auto-computed)
         if dist_bound_val is not None:
@@ -2776,30 +2703,36 @@ class AttackerClient(Client):
                 # CRITICAL: Use detach() for initial calculations to avoid interfering with optimization loop's computation graph
                 # Use GPU versions if available (will be created right after this)
                 with torch.no_grad():
-                    initial_benign_ref_gpu = self._aggregate_benign_only(
-                        getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                        else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                        device=target_device
+                    # CRITICAL: Compute distance to FINAL AGGREGATION (includes current attacker)
+                    initial_global_ref_gpu, _, _ = self._aggregate_update_no_beta(
+                        proxy_param.detach(),
+                        benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
+                        other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
                     )
-                    initial_dist_att_to_benign = torch.norm(proxy_param.detach().view(-1) - initial_benign_ref_gpu.view(-1))
-                    initial_dist = initial_dist_att_to_benign.item()
+                    initial_dist_att_to_global = torch.norm(proxy_param.detach().view(-1) - initial_global_ref_gpu.view(-1))
+                    initial_dist = initial_dist_att_to_global.item()
                     initial_g_dist = initial_dist - dist_bound_val
                     initial_lambda_dist = self.lambda_dist.item() if isinstance(self.lambda_dist, torch.Tensor) else self.lambda_dist if self.lambda_dist is not None else 0.0
                     initial_loss = self._compute_global_loss(
                         proxy_param.detach(),
                         benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
-                        other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None),
-                        use_loo_aggregation=True
+                        other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
                     ).item()
                     
                     # Compute initial similarity metrics if similarity constraint is enabled
                     initial_sim_info = ""
                     if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
-                        initial_benign_ref_gpu = self._aggregate_benign_only(
-                            getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                            else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                            device=target_device
-                        )
+                        # Compute initial similarity to BENIGN-ONLY REFERENCE (consistent with optimization loop)
+                        # Use pre-computed benign_ref_gpu_sim (computed once before loop, same as used in optimization)
+                        if benign_ref_gpu_sim is not None:
+                            initial_benign_ref_gpu = benign_ref_gpu_sim
+                        else:
+                            # Fallback: compute on-the-fly (shouldn't happen if preprocessing is correct)
+                            initial_benign_ref_gpu = self._aggregate_benign_only(
+                                getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
+                                else [u.to(initial_global_ref_gpu.device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
+                                device=initial_global_ref_gpu.device
+                            )
                         proxy_param_flat = proxy_param.detach().view(-1)
                         initial_benign_ref_flat = initial_benign_ref_gpu.view(-1)
                         initial_sim_att_to_benign = torch.cosine_similarity(
@@ -2862,11 +2795,17 @@ class AttackerClient(Client):
                     self._ensure_model_on_device(self.model, target_device)
             # Note: Full device check removed from here for performance (checked before loop and every 5 steps)
             
+            # ============================================================
+            # Compute base objective function F(w'_g(t)) according to paper Formula (3)
+            # ============================================================
+            # ============================================================
+            # Compute loss of AGGREGATED global model: F(w_g + Δ_g)
+            # ============================================================
+            # CRITICAL: Use GPU versions to avoid device transfers and maintain computation graph
             global_loss = self._compute_global_loss(
                 proxy_param,
                 benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
-                other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None),
-                use_loo_aggregation=True  # Use LOO aggregation for objective
+                other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
             )
             
             # ============================================================
@@ -2879,13 +2818,17 @@ class AttackerClient(Client):
                 # OPTIMIZATION 5: Use cached multipliers directly (already on correct device)
                 lambda_dist_tensor = self.lambda_dist  # Direct use, no conversion needed
                 
-                # Distance constraint MUST use benign-only reference (consistent with threshold stats)
-                benign_ref_gpu_dist = self._aggregate_benign_only(
-                    getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                    else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                    device=target_device
+                # ============================================================
+                # Distance Constraint: g_dist(x) = dist(Δ_att, Δ_g_final) - dist_bound <= 0
+                # ============================================================
+                # CRITICAL: Compute global reference INCLUDING current attacker (represents final server aggregation)
+                # This ensures constraint directly measures distance to the actual final aggregated update
+                global_ref_gpu, _, _ = self._aggregate_update_no_beta(
+                    proxy_param,
+                    benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
+                    other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
                 )
-                dist_att_to_benign = torch.norm(proxy_param.view(-1) - benign_ref_gpu_dist.view(-1))
+                dist_att_to_global = torch.norm(proxy_param.view(-1) - global_ref_gpu.view(-1))
                 
                 # ============================================================
                 # Standard Lagrangian Dual formulation (NO ReLU in Lagrangian term)
@@ -2903,7 +2846,7 @@ class AttackerClient(Client):
                 # - NO quadratic penalty term (this is standard Lagrangian, NOT Augmented Lagrangian)
                 # ============================================================
                 # Use pre-converted dist_bound_val (converted before loop to avoid repeated conversion)
-                g_dist = dist_att_to_benign - dist_bound_val if dist_bound_val is not None else torch.tensor(0.0, device=target_device)
+                g_dist = dist_att_to_global - dist_bound_val if dist_bound_val is not None else torch.tensor(0.0, device=target_device)
                 
                 # Standard Lagrangian distance term (NO ReLU here)
                 # dist_lagr_term = λ_dist * g_dist
@@ -2917,36 +2860,68 @@ class AttackerClient(Client):
                 # ============================================================
                 sim_lagr_term = torch.tensor(0.0, device=target_device)
                 if self.use_cosine_similarity_constraint and cached_benign_sim_stats is not None:
-                    benign_ref_gpu_sim = self._aggregate_benign_only(
-                        getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                        else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                        device=target_device
-                    )
-                    proxy_param_flat = proxy_param.view(-1)
-                    benign_ref_flat = benign_ref_gpu_sim.view(-1)
+                    # CRITICAL: Use pre-computed benign_ref_gpu_sim (computed once before loop)
+                    # This avoids re-aggregating benign updates in each iteration (major performance optimization)
+                    # Benefits:
+                    # 1. Performance: Compute once before loop (constant throughout optimization)
+                    # 2. Consistency: Constraint and statistics use the same reference (Δ_g_benign)
+                    # 3. Lower similarity values: Attacker similarity will be lower (not including itself), closer to benign range
+                    # 4. Direct constraint: Measures similarity to benign aggregation, not to final aggregation including self
+                    # 5. Clearer optimization target: Attacker must be similar to benign aggregation, not to final aggregation including self
+                    if benign_ref_gpu_sim is not None:
+                        # Use pre-computed value (constant throughout optimization)
+                        proxy_param_flat = proxy_param.view(-1)
+                        benign_ref_flat = benign_ref_gpu_sim.view(-1)
+                    else:
+                        # Fallback: compute on-the-fly (shouldn't happen if preprocessing is correct)
+                        benign_ref_gpu_sim_current = self._aggregate_benign_only(
+                            getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
+                            else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
+                            device=target_device
+                        )
+                        proxy_param_flat = proxy_param.view(-1)
+                        benign_ref_flat = benign_ref_gpu_sim_current.view(-1)
                     sim_att_to_benign = torch.cosine_similarity(
                         proxy_param_flat.unsqueeze(0),
                         benign_ref_flat.unsqueeze(0),
                         dim=1
                     ).squeeze(0)
                     
+                    # Get benign similarity statistics (cached before loop)
+                    benign_sim_mean = cached_benign_sim_stats['mean']
+                    benign_sim_std = cached_benign_sim_stats['std']
+                    
+                    # Compute bounds for two-sided constraint (sim range: [-1, 1])
+                    # - Lower bound: prevents negative similarity (opposite direction)
+                    # - Upper bound: prevents abnormally high similarity (outlier detection)
+                    # Always use mean ± 2*std mode (more stable than min/max, avoids outlier issues)
+                    # This covers ~97.5% of benign clients, more lenient than mean ± 1*std (~84% coverage)
                     benign_sim_mean = cached_benign_sim_stats['mean']
                     benign_sim_std = cached_benign_sim_stats['std']
                     
                     if self.sim_center is not None:
+                        # If sim_center is provided, use it as center with ±2*std as bounds
                         sim_center = torch.tensor(self.sim_center, device=target_device, dtype=sim_att_to_benign.dtype)
                         sim_bound_low = torch.clamp(sim_center - 2.0 * benign_sim_std, min=-1.0, max=1.0)
                         sim_bound_up = torch.clamp(sim_center + 2.0 * benign_sim_std, min=-1.0, max=1.0)
                     else:
+                        # Use mean ± 2*std (statistically robust, covers ~97.5% of benign clients, less affected by outliers)
+                        # Clamp to valid range [-1, 1] for cosine similarity
                         sim_bound_low = torch.clamp(benign_sim_mean - 2.0 * benign_sim_std, min=-1.0, max=1.0)
                         sim_bound_up = torch.clamp(benign_sim_mean + 2.0 * benign_sim_std, min=-1.0, max=1.0)
                     
+                    # Two-sided constraints (NO ReLU in Lagrangian terms)
+                    # g_sim_low = sim_bound_low - sim_att_to_benign <= 0
+                    # g_sim_up = sim_att_to_benign - sim_bound_up <= 0
                     g_sim_low = sim_bound_low - sim_att_to_benign
                     g_sim_up = sim_att_to_benign - sim_bound_up
                     
+                    # Two independent Lagrangian multipliers
                     lambda_sim_low_tensor = self.lambda_sim_low
                     lambda_sim_up_tensor = self.lambda_sim_up
                     
+                    # Similarity Lagrangian terms (NO ReLU here, standard Lagrangian)
+                    # sim_lagr_term = λ_sim_low * g_sim_low + λ_sim_up * g_sim_up
                     sim_lagr_term = lambda_sim_low_tensor * g_sim_low + lambda_sim_up_tensor * g_sim_up
                 
                 
@@ -2986,13 +2961,12 @@ class AttackerClient(Client):
                 # ============================================================
                 dist_bound_val_hc = float(self.dist_bound) if isinstance(self.dist_bound, torch.Tensor) else self.dist_bound if self.dist_bound is not None else None
                 if dist_bound_val_hc is not None:
-                    # Distance constraint MUST use benign-only reference (consistent with threshold stats)
-                    benign_ref_hc = self._aggregate_benign_only(
-                        getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                        else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                        device=target_device
+                    # CRITICAL: Use GPU versions even in hard constraint mode to avoid device transfers
+                    dist_att_to_agg, _ = self._compute_distance_update_space(
+                    proxy_param,
+                        benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
+                        other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
                     )
-                    dist_att_to_agg = torch.norm(proxy_param.view(-1) - benign_ref_hc.view(-1))
                     constraint_dist_violation = F.relu(dist_att_to_agg - dist_bound_val_hc)
                 else:
                     dist_att_to_agg = torch.tensor(0.0, device=target_device)
@@ -3073,12 +3047,12 @@ class AttackerClient(Client):
                 # CRITICAL: Check dist_bound_val (effective dist_bound) instead of self.dist_bound
                 # dist_bound_val may be computed from benign_max even when self.dist_bound is None
                 if dist_bound_val is not None:
-                    # Reuse distance to benign reference computed above
-                    dist_att_val = dist_att_to_benign.item()
+                    # Reuse distance to global reference computed above
+                    dist_att_val = dist_att_to_global.item()
                     lambda_dist_val = self.lambda_dist.item() if isinstance(self.lambda_dist, torch.Tensor) else self.lambda_dist
                     
                     # Standard dual ascent update: λ_dist(t+1) = max(0, λ_dist(t) + α_λ * g_dist)
-                    # where g_dist = dist_att_to_benign - dist_bound
+                    # where g_dist = dist_att_to_global - dist_bound
                     # - If constraint is violated (g_dist > 0): λ_dist increases
                     # - If constraint is satisfied (g_dist < 0): λ_dist decreases (clamped to ≥ 0)
                     g_dist_val = dist_att_val - dist_bound_val
@@ -3141,7 +3115,7 @@ class AttackerClient(Client):
                                        f"λ_sim_low({lambda_sim_low_val:.4f}→{new_lambda_sim_low:.4f}), " \
                                        f"λ_sim_up({lambda_sim_up_val:.4f}→{new_lambda_sim_up:.4f}), " \
                                        f"g_low={g_sim_low_val:.4f}, g_up={g_sim_up_val:.4f}"
-                        print(log_msg)
+                            print(log_msg)
                     
                     # ============================================================
                     # Early stopping: Stop when ALL constraints are satisfied and stable
@@ -3216,22 +3190,20 @@ class AttackerClient(Client):
         if effective_dist_bound_final is not None:
             # CRITICAL: Compute distance to FINAL AGGREGATION (consistent with optimization loop)
             # Compute final global reference INCLUDING current attacker (represents actual server aggregation)
-            # Distance constraint MUST use benign-only reference (consistent with threshold stats)
-            final_benign_ref_gpu = self._aggregate_benign_only(
-                getattr(self, 'benign_updates_gpu', None) if hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None
-                else [u.to(target_device) for u in self.benign_updates] if len(self.benign_updates) > 0 else [],
-                device=target_device
+            final_global_ref_gpu, _, _ = self._aggregate_update_no_beta(
+                proxy_param,
+                benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
+                other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
             )
-            final_dist_att_to_benign = torch.norm(proxy_param.detach().view(-1) - final_benign_ref_gpu.view(-1))
-            final_dist_att = final_dist_att_to_benign.item()
+            final_dist_att_to_global = torch.norm(proxy_param.view(-1) - final_global_ref_gpu.view(-1))
+            final_dist_att = final_dist_att_to_global.item()
             dist_bound_final = float(effective_dist_bound_final) if isinstance(effective_dist_bound_final, torch.Tensor) else effective_dist_bound_final
             final_g_dist = final_dist_att - dist_bound_final
             final_lambda_dist = self.lambda_dist.item() if isinstance(self.lambda_dist, torch.Tensor) else self.lambda_dist if self.lambda_dist is not None else 0.0
             final_loss = self._compute_global_loss(
                 proxy_param,
                 benign_updates_gpu=getattr(self, 'benign_updates_gpu', None),
-                other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None),
-                use_loo_aggregation=True
+                other_attacker_updates_gpu=getattr(self, 'other_attacker_updates_gpu', None)
             ).item()
             final_violation = max(0, final_g_dist)
             violation_pct = (final_violation / dist_bound_final * 100) if dist_bound_final > 0 else 0.0
@@ -3258,15 +3230,24 @@ class AttackerClient(Client):
             del self.other_attacker_updates_gpu
         torch.cuda.empty_cache()
         
+        # ============================================================
+        # STEP 8: Final constraint check (pure Lagrangian optimization, no projection)
+        # ============================================================
+        # Use effective dist_bound (which may be auto-computed from benign max if self.dist_bound is None)
+        # CRITICAL: Ensure malicious_update is on CPU for final check (GPU caches have been cleaned up)
+        malicious_update_cpu = malicious_update.cpu() if malicious_update.device.type == 'cuda' else malicious_update
         effective_dist_bound = getattr(self, '_effective_dist_bound', self.dist_bound)
         if effective_dist_bound is not None:
-            # Distance constraint MUST use benign-only reference (consistent with threshold stats)
-            final_benign_ref = self._aggregate_benign_only(
-                self.benign_updates,
-                device=malicious_update.device if malicious_update.device.type == 'cuda' else None
+            # CRITICAL: Compute distance to FINAL AGGREGATION (consistent with optimization loop)
+            # Use CPU versions since GPU caches have been cleaned up
+            # Compute final aggregation INCLUDING current attacker (represents actual server aggregation)
+            final_global_ref_cpu, _, _ = self._aggregate_update_no_beta(
+                malicious_update_cpu,
+                benign_updates=self.benign_updates,
+                other_attacker_updates_list=self.other_attacker_updates if hasattr(self, 'other_attacker_updates') else None
             )
-            dist_to_benign_final = torch.norm(malicious_update.view(-1) - final_benign_ref.view(-1))
-            dist_to_global = dist_to_benign_final.item()
+            dist_to_global_final = torch.norm(malicious_update_cpu.view(-1) - final_global_ref_cpu.view(-1))
+            dist_to_global = dist_to_global_final.item()
             dist_bound_final = float(effective_dist_bound) if isinstance(effective_dist_bound, torch.Tensor) else effective_dist_bound
             constraint_violation = max(0, dist_to_global - dist_bound_final)
             violation_ratio = constraint_violation / dist_bound_final if dist_bound_final > 0 else 0.0
@@ -3280,14 +3261,11 @@ class AttackerClient(Client):
                     print(f"    [Attacker {self.client_id}] Distance constraint violation: {constraint_violation:.6f} "
                           f"(violation={violation_ratio*100:.1f}%)")
         
-        # Use LOO aggregation for final loss computation (consistent with optimization objective)
-        final_global_loss = self._compute_global_loss(
-                    malicious_update,
-            benign_updates=self.benign_updates,
-            benign_updates_gpu=None,
-            other_attacker_updates_gpu=None,
-            use_loo_aggregation=True
-        )
+        # Compute final attack objective value for logging
+        # Use aggregated update for final loss (consistent with optimization objective)
+        # CRITICAL: Use CPU version for final aggregation (GPU caches have been cleaned up)
+        final_aggregated_update, _, _ = self._aggregate_update_no_beta(malicious_update_cpu, self.benign_updates)
+        final_global_loss = self._proxy_global_loss(final_aggregated_update, max_batches=self.proxy_max_batches_eval, skip_dim_check=True)
         
         malicious_norm = torch.norm(malicious_update).item()
         log_msg = f"    [Attacker {self.client_id}] GRMP Attack: " \
@@ -3310,7 +3288,12 @@ class AttackerClient(Client):
         
         print(log_msg)
         
-        malicious_update_final = malicious_update.detach()
+        # CRITICAL: malicious_update_cpu is already on CPU (created above for final check)
+        # No need to convert again, but ensure it's detached
+        malicious_update_final = malicious_update_cpu.detach()
+        # Clean up GPU references if malicious_update was on GPU
+        if malicious_update.device.type == 'cuda':
+            del malicious_update
         del final_global_loss
         torch.cuda.empty_cache()
         
