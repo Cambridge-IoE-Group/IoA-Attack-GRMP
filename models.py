@@ -126,32 +126,45 @@ class NewsClassifierModel(nn.Module):
         )
         return outputs.logits
 
-    def get_flat_params(self) -> torch.Tensor:
+    def get_flat_params(self, requires_grad: bool = False) -> torch.Tensor:
         """
         Get model parameters flattened into a single 1D tensor.
         - Full fine-tuning: Returns all parameters
         - LoRA: Returns only LoRA parameters (trainable parameters)
         
+        Args:
+            requires_grad: If True, preserve gradients (for training). If False, detach (for aggregation).
+        
         Useful for Federated Learning aggregation.
         """
         if self.use_lora:
-            return self._get_lora_params()
+            return self._get_lora_params(requires_grad=requires_grad)
         else:
-            return self._get_full_params()
+            return self._get_full_params(requires_grad=requires_grad)
     
-    def _get_full_params(self) -> torch.Tensor:
+    def _get_full_params(self, requires_grad: bool = False) -> torch.Tensor:
         """Get all model parameters (full fine-tuning mode)."""
         # Use self.model.parameters() to access the actual model parameters
-        return torch.cat([p.data.view(-1) for p in self.model.parameters()])
+        if requires_grad:
+            # Preserve gradients for training (e.g., proximal regularization)
+            return torch.cat([p.view(-1) for p in self.model.parameters()])
+        else:
+            # Detach for aggregation/updates
+            return torch.cat([p.data.view(-1) for p in self.model.parameters()])
     
-    def _get_lora_params(self) -> torch.Tensor:
+    def _get_lora_params(self, requires_grad: bool = False) -> torch.Tensor:
         """Get only LoRA parameters (LoRA fine-tuning mode)."""
         lora_params = []
         # Use self.model.parameters() to access the actual model parameters
         # In LoRA mode, only trainable parameters are LoRA params
         for param in self.model.parameters():
             if param.requires_grad:
-                lora_params.append(param.data.view(-1))
+                if requires_grad:
+                    # Preserve gradients for training (e.g., proximal regularization)
+                    lora_params.append(param.view(-1))
+                else:
+                    # Detach for aggregation/updates
+                    lora_params.append(param.data.view(-1))
         
         if not lora_params:
             # Fallback: if no trainable params found, return empty tensor

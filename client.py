@@ -191,7 +191,8 @@ class BenignClient(Client):
                 
                 # Add proximal regularization term
                 # Move initial_params to GPU temporarily for computation
-                current_params = self.model.get_flat_params()
+                # CRITICAL: requires_grad=True to preserve gradients for backward pass
+                current_params = self.model.get_flat_params(requires_grad=True)
                 initial_params_gpu = initial_params.to(self.device)
                 proximal_term = mu * torch.norm(current_params - initial_params_gpu) ** 2
                 initial_params_gpu = None  # Release GPU reference
