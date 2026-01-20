@@ -940,6 +940,10 @@ class AttackerClient(Client):
             else:
                 global_params_gpu = self.global_model_params
             
+            # CRITICAL: Ensure malicious_update is also on target_device before addition
+            if malicious_update.device != global_params_gpu.device:
+                malicious_update = malicious_update.to(global_params_gpu.device)
+            
             candidate_params = global_params_gpu + malicious_update
             
             # CRITICAL: Check LoRA mode BEFORE processing to avoid unnecessary work
@@ -1017,8 +1021,23 @@ class AttackerClient(Client):
                     # Step 3: Construct full_params = base_params (constants) + lora_params (trainable)
                     # CRITICAL: base_params are detached constants (requires_grad=False),
                     #          lora_params maintain gradients (requires_grad=True)
-                    full_params = dict(self.base_params)  # Shallow copy of base params (detached)
-                    full_params.update(lora_params)  # Add LoRA params (with gradients)
+                    # CRITICAL: Ensure all params are on the same device (target_device) before merging
+                    full_params = {}
+                    # First, ensure base_params are on target_device
+                    for name, param in self.base_params.items():
+                        if not self._device_matches(param.device, target_device):
+                            full_params[name] = param.to(target_device)
+                        else:
+                            full_params[name] = param
+                    # Then, add LoRA params (which should already be on target_device from candidate_lora_flat)
+                    # But check device consistency anyway
+                    for name, param in lora_params.items():
+                        if not self._device_matches(param.device, target_device):
+                            # CRITICAL: Cannot modify lora_params directly (it's a dict from view/reshape)
+                            # So we create a new tensor on the correct device
+                            full_params[name] = param.to(target_device)
+                        else:
+                            full_params[name] = param
                     
                     # Step 4: Ensure base_buffers are on correct device
                     # Buffers are constants (e.g., batch norm running means), no gradients needed
@@ -1986,14 +2005,26 @@ class AttackerClient(Client):
             Dictionary with statistics: mean, std, min, max, median
         """
         # Compute aggregated update from BENIGN CLIENTS ONLY (ensures consistent sim_T across attackers)
-        aggregated_update = self._aggregate_benign_only(benign_updates, device=None)
+        # CRITICAL: Determine device from benign_updates or malicious_update
+        # If malicious_update is provided and on GPU, use that device; otherwise use first benign_update's device
+        if len(benign_updates) > 0:
+            target_device = benign_updates[0].device
+        elif malicious_update is not None:
+            target_device = malicious_update.device
+        else:
+            target_device = self.device
+        
+        aggregated_update = self._aggregate_benign_only(benign_updates, device=target_device)
         aggregated_flat = aggregated_update.view(-1)
         device = aggregated_flat.device
         
         # Compute similarity for each benign update
         benign_similarities = []
         for benign_update in benign_updates:
-            benign_flat = benign_update.view(-1).to(device)
+            benign_flat = benign_update.view(-1)
+            # CRITICAL: Ensure benign_update is on the same device as aggregated_update
+            if benign_flat.device != device:
+                benign_flat = benign_flat.to(device)
             sim = torch.cosine_similarity(
                 benign_flat.unsqueeze(0),
                 aggregated_flat.unsqueeze(0),
@@ -2157,6 +2188,9 @@ class AttackerClient(Client):
             
             # Construct final aggregation: Δ_g_final^{(j)} = Δ_g_loo^{(-j)} + (D_j / D_total) * Δ_att^{(j)}
             w_self = D_self / (D_total + 1e-12)
+            # CRITICAL: Ensure malicious_update is on the same device as delta_g_loo before addition
+            if malicious_update.device != delta_g_loo.device:
+                malicious_update = malicious_update.to(delta_g_loo.device)
             delta_g_final = delta_g_loo + w_self * malicious_update.view(-1)
             
             aggregated_update = delta_g_final
@@ -2170,6 +2204,10 @@ class AttackerClient(Client):
             )
         
         # Compute loss on aggregated model: F(w_g + Δ_g_final)
+        # CRITICAL: Ensure aggregated_update is on the correct device before calling _proxy_global_loss
+        # _proxy_global_loss will handle device conversion internally, but we ensure it here for safety
+        if aggregated_update.device != device:
+            aggregated_update = aggregated_update.to(device)
         return self._proxy_global_loss(
             aggregated_update,
             max_batches=self.proxy_max_batches_opt,
@@ -2638,9 +2676,11 @@ class AttackerClient(Client):
         # Similar to similarity constraint: if d_T is None, use benign mean distance
         # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         # Threshold statistics MUST use benign-only reference (no attackers)
-        if len(self.benign_updates) > 0:
+        # CRITICAL: Use GPU versions for statistics if available, to avoid CPU/GPU transfers
+        benign_updates_for_stats = getattr(self, 'benign_updates_gpu', None) if (hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None) else self.benign_updates
+        if len(benign_updates_for_stats) > 0:
             cached_benign_dist_stats = self._compute_benign_distance_statistics(
-                self.benign_updates,
+                benign_updates_for_stats,
                 benign_ref_update=None  # Will compute benign-only aggregate internally
             )
         else:
@@ -2671,10 +2711,12 @@ class AttackerClient(Client):
         # Cache benign cosine similarity statistics before loop (avoid recomputation each step)
         # CRITICAL: Use detach() to avoid creating computation graph (statistics are for threshold calculation only)
         # Compute this BEFORE initial state printing so we can include similarity info
-        if self.use_cosine_similarity_constraint and len(self.benign_updates) > 0:
+        # CRITICAL: Use GPU versions for statistics if available, to avoid CPU/GPU transfers
+        benign_updates_for_stats = getattr(self, 'benign_updates_gpu', None) if (hasattr(self, 'benign_updates_gpu') and getattr(self, 'benign_updates_gpu') is not None) else self.benign_updates
+        if self.use_cosine_similarity_constraint and len(benign_updates_for_stats) > 0:
             # Use initial proxy_param to compute reference statistics
             cached_benign_sim_stats = self._compute_benign_cosine_similarity_statistics(
-                self.benign_updates,
+                benign_updates_for_stats,
                 proxy_param.detach()
             )
         else:
