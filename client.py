@@ -2279,8 +2279,14 @@ class AttackerClient(Client):
         if M <= 0:
             raise ValueError(f"[Attacker {self.client_id}] Invalid M dimension: {M}")
         
+        # CRITICAL: Ensure all tensors are on the same device before matrix operations
+        target_device = feature_matrix.device
+        
         # Step 1: Compute Laplacian of original graph
         # L = diag(A·1) - A
+        # CRITICAL: Ensure adj_orig is on the same device as feature_matrix
+        if adj_orig.device != target_device:
+            adj_orig = adj_orig.to(target_device)
         degree_orig = adj_orig.sum(dim=1)
         L_orig = torch.diag(degree_orig) - adj_orig  # (M, M)
         
@@ -2292,14 +2298,20 @@ class AttackerClient(Client):
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD failed: {e}, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
         
         # Step 3: Compute GFT coefficient matrix
         # S = F · B where F ∈ R^{I×M}, B ∈ R^{M×M}
+        # CRITICAL: Ensure B_orig is on the same device as feature_matrix
+        if B_orig.device != target_device:
+            B_orig = B_orig.to(target_device)
         S = torch.mm(feature_matrix, B_orig)  # (I, M)
         
         # Step 4: Compute Laplacian of reconstructed graph
         # L̂ = diag(Â·1) - Â
+        # CRITICAL: Ensure adj_recon is on the same device
+        if adj_recon.device != target_device:
+            adj_recon = adj_recon.to(target_device)
         degree_recon = adj_recon.sum(dim=1)
         L_recon = torch.diag(degree_recon) - adj_recon  # (M, M)
         
@@ -2310,10 +2322,13 @@ class AttackerClient(Client):
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD of recon failed: {e}, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
         
         # Step 6: Generate reconstructed feature matrix
         # F̂ = S · B̂^T where S ∈ R^{I×M}, B̂ ∈ R^{M×M}
+        # CRITICAL: Ensure B_recon is on the same device as S
+        if B_recon.device != S.device:
+            B_recon = B_recon.to(S.device)
         F_recon = torch.mm(S, B_recon.t())  # (I, M)
         
         # Step 7: Generate malicious update
@@ -2327,7 +2342,7 @@ class AttackerClient(Client):
         if F_recon_rows == 0:
             # Empty feature matrix: return zeros
             print(f"    [Attacker {self.client_id}] F_recon is empty, using zero fallback")
-            return torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+            return torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
         
         # Select a vector from F̂ as the malicious update
         # Use client_id to select different vectors for different attackers (for diversity)
@@ -2356,7 +2371,12 @@ class AttackerClient(Client):
         # Generate perturbation with client_id and select_idx dependent scale
         # Scale increases with client_id and select_idx to ensure different perturbations
         perturbation_scale = self.gsp_perturbation_scale * (self.client_id + 1) * (1.0 + 0.1 * select_idx)
+        # CRITICAL: Ensure perturbation is on the same device as gsp_attack
+        # torch.randn_like creates tensor on the same device as input
         perturbation = torch.randn_like(gsp_attack) * perturbation_scale
+        # CRITICAL: Verify device match before addition
+        if perturbation.device != gsp_attack.device:
+            perturbation = perturbation.to(gsp_attack.device)
         gsp_attack = gsp_attack + perturbation
         
         # Restore random state
@@ -2375,7 +2395,7 @@ class AttackerClient(Client):
         if gsp_attack.numel() != M:
             # Size mismatch: create zeros with correct size
             print(f"    [Attacker {self.client_id}] GSP attack size mismatch: got {gsp_attack.numel()}, expected {M}, using zeros")
-            gsp_attack = torch.zeros(M, device=feature_matrix.device, dtype=feature_matrix.dtype)
+            gsp_attack = torch.zeros(M, device=target_device, dtype=feature_matrix.dtype)
         
         return gsp_attack
 
@@ -2570,14 +2590,23 @@ class AttackerClient(Client):
                 print(f"    [Attacker {self.client_id}] LoRA dimension check passed: "
                       f"global_params={global_numel}, _flat_numel={self._flat_numel}")
         proxy_lr = self.proxy_step
+        # CRITICAL: Ensure malicious_update is on correct device before creating perturbation
+        # malicious_update may be on CPU from GSP generation, but needs to be on GPU for optimization
+        target_device = torch.device('cuda:0') if self.device.type == 'cuda' else self.device
+        if malicious_update.device != target_device:
+            malicious_update = malicious_update.to(target_device)
+        
         # Add small client-specific perturbation to initial malicious_update to ensure diversity
         # This helps different attackers converge to different local optima
         if self.is_attacker:
             perturbation_scale = self.opt_init_perturbation_scale * (self.client_id + 1)  # Small scale, client-specific
             initial_perturbation = torch.randn_like(malicious_update) * perturbation_scale
-            proxy_param = (malicious_update + initial_perturbation).clone().detach().to(self.device)
+            # CRITICAL: Verify device match before addition
+            if initial_perturbation.device != malicious_update.device:
+                initial_perturbation = initial_perturbation.to(malicious_update.device)
+            proxy_param = (malicious_update + initial_perturbation).clone().detach().to(target_device)
         else:
-            proxy_param = malicious_update.clone().detach().to(self.device)
+            proxy_param = malicious_update.clone().detach().to(target_device)
         proxy_param.requires_grad_(True)
         proxy_opt = optim.Adam([proxy_param], lr=proxy_lr)
         
