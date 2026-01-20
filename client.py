@@ -1291,6 +1291,12 @@ class AttackerClient(Client):
         threshold = float(self.graph_threshold) if isinstance(self.graph_threshold, (int, float)) else 0.5
         adj_matrix = (adj_matrix > threshold).float()
         
+        # CRITICAL: Ensure adj_matrix is on the same device as input
+        # All operations should preserve device, but verify explicitly
+        target_device = reduced_features.device
+        if adj_matrix.device != target_device:
+            adj_matrix = adj_matrix.to(target_device)
+        
         return adj_matrix
 
     def _train_vgae(self, adj_matrix: torch.Tensor, feature_matrix: torch.Tensor, epochs=None) -> torch.Tensor:
@@ -1365,7 +1371,12 @@ class AttackerClient(Client):
             loss.backward()
             self.vgae_optimizer.step()
         
-        return adj_recon.detach()  # Return reconstructed adjacency for GSP
+        # CRITICAL: Ensure adj_recon is on self.device before returning
+        # VGAE model is on self.device, so adj_recon should be too, but verify explicitly
+        adj_recon_detached = adj_recon.detach()
+        if adj_recon_detached.device != self.device:
+            adj_recon_detached = adj_recon_detached.to(self.device)
+        return adj_recon_detached  # Return reconstructed adjacency for GSP
 
     def set_global_model_params(self, global_params: torch.Tensor):
         """
@@ -2273,6 +2284,10 @@ class AttackerClient(Client):
         try:
             U_orig, S_orig, Vh_orig = torch.linalg.svd(L_orig, full_matrices=True)
             B_orig = U_orig  # GFT basis (M, M)
+            # CRITICAL: Explicitly ensure B_orig is on target_device after SVD
+            # SVD may sometimes return CPU tensors even if input is on GPU
+            if B_orig.device != target_device:
+                B_orig = B_orig.to(target_device)
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD failed: {e}, using zero fallback")
@@ -2280,10 +2295,15 @@ class AttackerClient(Client):
         
         # Step 3: Compute GFT coefficient matrix
         # S = F · B where F ∈ R^{I×M}, B ∈ R^{M×M}
-        # CRITICAL: Ensure B_orig is on the same device as feature_matrix
+        # CRITICAL: Ensure all tensors are on target_device before matrix multiplication
+        if feature_matrix.device != target_device:
+            feature_matrix = feature_matrix.to(target_device)
         if B_orig.device != target_device:
             B_orig = B_orig.to(target_device)
         S = torch.mm(feature_matrix, B_orig)  # (I, M)
+        # CRITICAL: Ensure S is on target_device (should be, but verify)
+        if S.device != target_device:
+            S = S.to(target_device)
         
         # Step 4: Compute Laplacian of reconstructed graph
         # L̂ = diag(Â·1) - Â
@@ -2297,6 +2317,10 @@ class AttackerClient(Client):
         try:
             U_recon, S_recon, Vh_recon = torch.linalg.svd(L_recon, full_matrices=True)
             B_recon = U_recon  # New GFT basis (M, M)
+            # CRITICAL: Explicitly ensure B_recon is on target_device after SVD
+            # SVD may sometimes return CPU tensors even if input is on GPU
+            if B_recon.device != target_device:
+                B_recon = B_recon.to(target_device)
         except Exception as e:
             # Fallback if SVD fails: return zeros in reduced dimension
             print(f"    [Attacker {self.client_id}] SVD of recon failed: {e}, using zero fallback")
@@ -2304,9 +2328,18 @@ class AttackerClient(Client):
         
         # Step 6: Generate reconstructed feature matrix
         # F̂ = S · B̂^T where S ∈ R^{I×M}, B̂ ∈ R^{M×M}
-        # CRITICAL: Ensure B_recon is on the same device as S
-        if B_recon.device != S.device:
-            B_recon = B_recon.to(S.device)
+        # CRITICAL: Ensure all tensors are on target_device before matrix multiplication
+        # Double-check S is on target_device (should be from Step 3, but verify)
+        if S.device != target_device:
+            S = S.to(target_device)
+        if B_recon.device != target_device:
+            B_recon = B_recon.to(target_device)
+        # Final verification before matrix multiplication
+        if S.device != B_recon.device:
+            raise RuntimeError(
+                f"[Attacker {self.client_id}] Device mismatch before F_recon calculation: "
+                f"S.device={S.device}, B_recon.device={B_recon.device}, target_device={target_device}"
+            )
         F_recon = torch.mm(S, B_recon.t())  # (I, M)
         
         # Step 7: Generate malicious update
@@ -2447,6 +2480,14 @@ class AttackerClient(Client):
         # STEP 4: GSP module to generate malicious update
         # Paper: "Use GSP module to obtain F̂, determine w'_j(t)"
         # ============================================================
+        # CRITICAL: Ensure all inputs are on self.device before calling _gsp_generate_malicious
+        if reduced_benign.device != self.device:
+            reduced_benign = reduced_benign.to(self.device)
+        if adj_matrix.device != self.device:
+            adj_matrix = adj_matrix.to(self.device)
+        if adj_recon.device != self.device:
+            adj_recon = adj_recon.to(self.device)
+        
         gsp_attack_reduced = self._gsp_generate_malicious(
             reduced_benign, adj_matrix, adj_recon, poisoned_update
         )
