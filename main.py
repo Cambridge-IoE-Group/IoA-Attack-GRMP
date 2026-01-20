@@ -636,7 +636,7 @@ def main():
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
-        'early_stop_constraint_stability_steps': 10,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
+        'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
