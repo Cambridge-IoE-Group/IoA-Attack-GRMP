@@ -588,12 +588,12 @@ def main():
         'num_rounds': 50,  # Total number of federated learning rounds (int)
         
         # ========== Training Hyperparameters ==========
-        'client_lr': 2e-5,  # Learning rate for local client training (float)
+        'client_lr': 5e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
         'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
-        'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] (float)
+        'alpha': 0.1,  # Proximal regularization coefficient μ (FedProx standard: (μ/2) * ||w - w_t||²)
         
         # ========== Data Distribution ==========
         'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
@@ -632,7 +632,7 @@ def main():
         'vgae_dropout': 0.1,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
@@ -642,7 +642,7 @@ def main():
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
         # Distance constraint multiplier parameters
         'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
-        'lambda_dist_lr': 0.1,    # Learning rate for λ_dist(t) update (dual ascent step size)
+        'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
         'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraints (bool, True/False)
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att

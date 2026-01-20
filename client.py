@@ -65,7 +65,8 @@ class Client:
             data_loader: DataLoader for local training data
             lr: Learning rate for local training (must be provided, no default)
             local_epochs: Number of local training epochs per round (must be provided, no default)
-            alpha: Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (must be provided, no default)
+            alpha: Proximal regularization coefficient μ (FedProx standard: min_w F_k(w) + (μ/2) * ||w - w_t||²)
+                   Note: α corresponds to μ in FedProx paper (Li et al., 2020)
         
         Note: All parameters must be explicitly provided. Default values are removed to prevent
         inconsistencies with config settings. See main.py for proper usage.
@@ -149,7 +150,12 @@ class BenignClient(Client):
         self.set_round(round_num)
 
     def local_train(self, epochs=None) -> torch.Tensor:
-        """Perform local training - includes proximal regularization."""
+        """
+        Perform local training with FedProx proximal regularization.
+        
+        Standard FedProx formula: min_w F_k(w) + (μ/2) * ||w - w_t||²
+        where μ is the proximal regularization coefficient (self.alpha).
+        """
         if epochs is None:
             epochs = self.local_epochs
             
@@ -167,7 +173,9 @@ class BenignClient(Client):
         # Get initial params and move to CPU to save GPU memory
         initial_params = self.model.get_flat_params().clone().cpu()
         
-        # Proximal regularization coefficient (paper formula (1): α ∈ [0,1])
+        # Proximal regularization coefficient (FedProx standard: μ)
+        # Standard formula: min_w F_k(w) + (μ/2) * ||w - w_t||²
+        # Note: α (self.alpha) corresponds to μ in FedProx paper
         mu = self.alpha
 
         for epoch in range(epochs):
@@ -189,12 +197,14 @@ class BenignClient(Client):
                 
                 ce_loss = nn.CrossEntropyLoss()(logits, labels)
                 
-                # Add proximal regularization term
+                # Add proximal regularization term (FedProx standard formula: (μ/2) * ||w - w_t||²)
+                # Standard FedProx: min_w F_k(w) + (μ/2) * ||w - w_t||²
+                # This ensures gradient is μ * (w - w_t) without extra 2x factor
                 # Move initial_params to GPU temporarily for computation
                 # CRITICAL: requires_grad=True to preserve gradients for backward pass
                 current_params = self.model.get_flat_params(requires_grad=True)
                 initial_params_gpu = initial_params.to(self.device)
-                proximal_term = mu * torch.norm(current_params - initial_params_gpu) ** 2
+                proximal_term = (mu / 2.0) * torch.norm(current_params - initial_params_gpu) ** 2
                 initial_params_gpu = None  # Release GPU reference
                 
                 loss = ce_loss + proximal_term
@@ -257,7 +267,8 @@ class AttackerClient(Client):
             data_indices: List of data indices assigned to this client
             lr: Learning rate for local training (must be provided, no default)
             local_epochs: Number of local training epochs per round (must be provided, no default)
-            alpha: Proximal regularization coefficient α ∈ [0,1] (must be provided, no default)
+            alpha: Proximal regularization coefficient μ (FedProx standard: (μ/2) * ||w - w_t||²)
+                   Note: α corresponds to μ in FedProx paper (Li et al., 2020)
             dim_reduction_size: Dimensionality for feature reduction (default: 10000)
             vgae_epochs: Number of epochs for VGAE training (default: 20)
             vgae_lr: Learning rate for VGAE optimizer (default: 0.01)
