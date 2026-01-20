@@ -602,7 +602,7 @@ def main():
         # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
-        'use_lora': True,  # True for LoRA fine-tuning, False for full fine-tuning
+        'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
         # LoRA parameters (only used when use_lora=True)
         # NOTE: Lower r values = faster training but potentially less capacity
         # Recommended: r=8 for speed, r=16 for better performance (default)
@@ -624,7 +624,7 @@ def main():
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 20000,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 300,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 32,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -632,7 +632,7 @@ def main():
         'vgae_dropout': 0.1,  # VGAE dropout rate (float, 0.0-1.0)
         
         # ========== Attack Optimization Parameters ==========
-        'proxy_step': 0.1,  # Step size for gradient-free ascent toward global-loss proxy
+        'proxy_step': 0.01,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
@@ -641,8 +641,8 @@ def main():
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
         # Distance constraint multiplier parameters
-        'lambda_dist_init': 100,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
-        'lambda_dist_lr': 1.0,    # Learning rate for λ_dist(t) update (dual ascent step size)
+        'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
+        'lambda_dist_lr': 0.1,    # Learning rate for λ_dist(t) update (dual ascent step size)
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
         'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False)
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
