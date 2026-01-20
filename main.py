@@ -593,7 +593,7 @@ def main():
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
         'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
-        'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] from paper formula (1) (float)
+        'alpha': 0.05,  # Proximal regularization coefficient α ∈ [0,1] (float)
         
         # ========== Data Distribution ==========
         'dirichlet_alpha': 100,  # Make data less extreme non-IID (higher alpha = more balanced)
