@@ -2843,10 +2843,17 @@ class AttackerClient(Client):
                             benign_sim_max = cached_benign_sim_stats['max']
                             
                             # Print similarity statistics for debugging (relative to aggregation without current attacker)
+                            # Calculate actual bounds used (mean ± 1*std)
+                            if self.sim_center is not None:
+                                actual_bound_low = torch.clamp(torch.tensor(self.sim_center) - 1.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                                actual_bound_up = torch.clamp(torch.tensor(self.sim_center) + 1.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                            else:
+                                actual_bound_low = torch.clamp(benign_sim_mean - 1.0 * benign_sim_std, min=-1.0, max=1.0).item()
+                                actual_bound_up = torch.clamp(benign_sim_mean + 1.0 * benign_sim_std, min=-1.0, max=1.0).item()
                             print(f"    [Attacker {self.client_id}] Similarity stats (relative to aggregation without current attacker): "
                                   f"mean={benign_sim_mean.item():.4f}, std={benign_sim_std.item():.4f}, "
                                   f"min={benign_sim_min.item():.4f}, max={benign_sim_max.item():.4f}, "
-                                  f"bounds=[min, max]=[{benign_sim_min.item():.4f}, {benign_sim_max.item():.4f}]")
+                                  f"bounds=[mean±1*std]=[{actual_bound_low:.4f}, {actual_bound_up:.4f}]")
                             
                             if self.use_cosine_similarity_constraint:
                                 if self.sim_center is not None:
