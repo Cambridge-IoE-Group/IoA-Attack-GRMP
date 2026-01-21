@@ -328,6 +328,33 @@ class Server:
         self.history['clean_acc'].append(clean_accuracy)
 
         return clean_accuracy
+    
+    def evaluate_global_loss(self) -> float:
+        """
+        Evaluate the global model's loss on the test set.
+        
+        Returns:
+            Global loss (float) on the test set (cross-entropy loss)
+        """
+        self.global_model.eval()
+        
+        total_loss = 0.0
+        total_samples = 0
+        
+        with torch.no_grad():
+            for batch in self.test_loader:
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels = batch['labels'].to(self.device)
+                
+                outputs = self.global_model(input_ids, attention_mask)
+                loss = F.cross_entropy(outputs, labels, reduction='sum')
+                
+                total_loss += loss.item()
+                total_samples += labels.size(0)
+        
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0.0
+        return avg_loss
 
     def adaptive_adjustment(self, round_num: int):
         """Adaptively adjust parameters based on historical performance."""
@@ -487,5 +514,9 @@ class Server:
             delta_best = clean_acc - best_clean
             print(f"  ΔClean vs prev: {delta_prev:+.4f}")
             print(f"  ΔClean vs best: {delta_best:+.4f}")
+        
+        # Compute and display global loss
+        global_loss = self.evaluate_global_loss()
+        print(f"  Global Loss: {global_loss:.4f}")
 
         return round_log
