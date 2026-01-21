@@ -214,6 +214,7 @@ def setup_experiment(config):
                 vgae_hidden_dim=config['vgae_hidden_dim'],
                 vgae_latent_dim=config['vgae_latent_dim'],
                 vgae_dropout=config['vgae_dropout'],
+                vgae_kl_weight=config['vgae_kl_weight'],
                 proxy_steps=config['proxy_steps'],
                 grad_clip_norm=config['grad_clip_norm'],
                 early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3)
@@ -629,7 +630,8 @@ def main():
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 32,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
         'vgae_latent_dim': 16,  # VGAE latent space dimension (per paper: hidden2_dim=16)
-        'vgae_dropout': 0.1,  # VGAE dropout rate (float, 0.0-1.0)
+        'vgae_dropout': 0,  # VGAE dropout rate (float, 0.0-1.0)
+        'vgae_kl_weight': 0.1,  # Weight for KL divergence term in VGAE loss (float, default: 0.1)
         
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy

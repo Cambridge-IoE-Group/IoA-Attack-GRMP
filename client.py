@@ -254,6 +254,7 @@ class AttackerClient(Client):
                  vgae_hidden_dim=32,
                  vgae_latent_dim=16,
                  vgae_dropout=0.0,
+                 vgae_kl_weight=0.1,
                  proxy_steps=20,
                  grad_clip_norm=1.0,
                  early_stop_constraint_stability_steps=3):
@@ -281,6 +282,7 @@ class AttackerClient(Client):
             vgae_hidden_dim: VGAE hidden layer dimension (default: 32, per paper)
             vgae_latent_dim: VGAE latent space dimension (default: 16, per paper)
             vgae_dropout: VGAE dropout rate (default: 0.0)
+            vgae_kl_weight: Weight for KL divergence term in VGAE loss (default: 0.1)
             proxy_steps: Number of optimization steps for attack objective (default: 20)
             grad_clip_norm: Gradient clipping norm for training stability (default: 1.0)
         
@@ -303,6 +305,7 @@ class AttackerClient(Client):
         self.vgae_hidden_dim = vgae_hidden_dim
         self.vgae_latent_dim = vgae_latent_dim
         self.vgae_dropout = vgae_dropout
+        self.vgae_kl_weight = vgae_kl_weight
         self.proxy_steps = proxy_steps
         self.grad_clip_norm = grad_clip_norm
         self.early_stop_constraint_stability_steps = early_stop_constraint_stability_steps
@@ -1383,7 +1386,8 @@ class AttackerClient(Client):
             
             # Use configured VGAE architecture parameters (per paper: hidden1_dim=32, hidden2_dim=16)
             self.vgae = VGAE(input_dim=input_dim, hidden_dim=self.vgae_hidden_dim, 
-                            latent_dim=self.vgae_latent_dim, dropout=self.vgae_dropout).to(self.device)
+                            latent_dim=self.vgae_latent_dim, dropout=self.vgae_dropout,
+                            kl_weight=self.vgae_kl_weight).to(self.device)
             self.vgae_optimizer = optim.Adam(self.vgae.parameters(), lr=self.vgae_lr)
             
             # Restore random state to avoid affecting other random number generation
