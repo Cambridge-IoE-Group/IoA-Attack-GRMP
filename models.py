@@ -167,9 +167,11 @@ class NewsClassifierModel(nn.Module):
                     lora_params.append(param.data.view(-1))
         
         if not lora_params:
-            # Fallback: if no trainable params found, return empty tensor
-            # This shouldn't happen, but handle gracefully
-            return torch.tensor([], dtype=torch.float32)
+            # No trainable LoRA parameters found - this indicates a configuration error
+            raise RuntimeError(
+                "No trainable LoRA parameters found. "
+                "Please check LoRA configuration (target_modules, r, etc.)."
+            )
         
         return torch.cat(lora_params)
 
@@ -266,12 +268,32 @@ class VGAE(nn.Module):
     
     This model learns the relational structure among benign updates (as a graph)
     to generate adversarial gradients that mimic legitimate patterns.
+    
+    Standard VGAE architecture:
+    - Encoder: Two-layer GCN that outputs mean (μ) and log variance (log σ²)
+    - Reparameterization: z = μ + σ * ε (where ε ~ N(0,1))
+    - Decoder: Inner product decoder for adjacency matrix reconstruction
+    - Loss: L = L_recon + β * KL(q(z|X,A) || p(z))
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int = 64, latent_dim: int = 32, dropout: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int = 64, latent_dim: int = 32, 
+                 dropout: float = 0.2, kl_weight: float = 0.1):
+        """
+        Initialize VGAE model.
+        
+        Args:
+            input_dim: Input feature dimension (number of clients/benign models)
+            hidden_dim: Hidden layer dimension (default: 64)
+            latent_dim: Latent space dimension (default: 32)
+            dropout: Dropout rate (default: 0.2)
+            kl_weight: Weight for KL divergence term in loss function (default: 0.1)
+                       Lower values prevent posterior collapse, higher values enforce
+                       stronger regularization toward standard normal distribution.
+        """
         super().__init__()
         
         self.input_dim = input_dim
+        self.kl_weight = kl_weight
         
         # --- Encoder Layers ---
         self.gc1 = GraphConvolutionLayer(input_dim, hidden_dim)
@@ -312,9 +334,12 @@ class VGAE(nn.Module):
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """
         Inner product decoder: reconstructs the adjacency matrix.
-        A_pred = sigmoid(Z * Z^T)
+        Returns logits (before sigmoid) for use with binary_cross_entropy_with_logits.
+        A_pred = Z * Z^T (logits)
+        
+        Note: Apply sigmoid if probabilities are needed (e.g., for GSP module).
         """
-        adj_reconstructed = torch.sigmoid(torch.mm(z, z.t()))
+        adj_reconstructed = torch.mm(z, z.t())  # Return logits, not probabilities
         return adj_reconstructed
 
     def forward(self, x: torch.Tensor, adj: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -347,6 +372,23 @@ class VGAE(nn.Module):
                      mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """
         Calculates VGAE loss: Reconstruction Loss (Weighted BCE) + KL Divergence.
+        
+        Standard VGAE loss formulation:
+            L = L_recon + β * KL(q(z|X,A) || p(z))
+        
+        where:
+            - L_recon: Weighted binary cross-entropy for adjacency matrix reconstruction
+            - KL: KL divergence from approximate posterior q(z|X,A) to prior p(z) = N(0,1)
+            - β: Weighting factor (self.kl_weight) to balance reconstruction and regularization
+        
+        Args:
+            adj_reconstructed: Reconstructed adjacency matrix from decoder
+            adj_orig: Original adjacency matrix
+            mu: Mean of latent distribution (from encoder), shape: (n_nodes, latent_dim)
+            logvar: Log variance of latent distribution (from encoder), shape: (n_nodes, latent_dim)
+        
+        Returns:
+            Total VGAE loss (scalar tensor)
         """
         n_nodes = adj_orig.size(0)
         
@@ -364,6 +406,7 @@ class VGAE(nn.Module):
         norm = (n_nodes * n_nodes) / (num_non_edges * 2) if num_non_edges > 0 else 1.0
 
         # 1. Reconstruction Loss (Weighted Binary Cross Entropy)
+        # Formula: -[y*log(σ(x)) + (1-y)*log(1-σ(x))] with pos_weight for class imbalance
         bce_loss = norm * F.binary_cross_entropy_with_logits(
             adj_reconstructed, 
             adj_orig, 
@@ -371,10 +414,12 @@ class VGAE(nn.Module):
         )
 
         # 2. KL Divergence (Regularization term)
-        # KL(N(mu, sigma) || N(0, 1))
-        kl_loss = -0.5 / n_nodes * torch.mean(
-            torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-        )
+        # Standard formula: KL(N(μ, σ²) || N(0, 1)) = -0.5 * Σ[1 + log(σ²) - μ² - σ²]
+        # where logvar = log(σ²), so σ² = exp(logvar)
+        # Per node: sum over latent dimensions, then average over all nodes
+        kl_per_node = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+        kl_loss = torch.mean(kl_per_node)  # Average over all nodes (standard VGAE implementation)
 
-        # Combine losses (KL term is often weighted less to prevent posterior collapse)
-        return bce_loss + 0.1 * kl_loss
+        # Combine losses: L = L_recon + β * KL
+        # β (kl_weight) balances reconstruction quality vs. regularization strength
+        return bce_loss + self.kl_weight * kl_loss
