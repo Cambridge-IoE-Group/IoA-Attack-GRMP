@@ -230,18 +230,7 @@ def setup_experiment(config):
                     lambda_sim_low_init=config.get('lambda_sim_low_init', config.get('lambda_sim_init', 0.1)),
                     lambda_sim_up_init=config.get('lambda_sim_up_init', config.get('lambda_sim_init', 0.1)),
                     lambda_sim_low_lr=config.get('lambda_sim_low_lr', config.get('lambda_sim_lr', 0.01)),
-                    lambda_sim_up_lr=config.get('lambda_sim_up_lr', config.get('lambda_sim_lr', 0.01)),
-                    # ========== Augmented Lagrangian (ALM) parameters ==========
-                    use_augmented_lagrangian=config.get('use_augmented_lagrangian', False),
-                    lambda_update_mode=config.get('lambda_update_mode', 'classic'),
-                    rho_dist_init=config.get('rho_dist_init', 1.0),
-                    rho_sim_low_init=config.get('rho_sim_low_init', 1.0),
-                    rho_sim_up_init=config.get('rho_sim_up_init', 1.0),
-                    rho_adaptive=config.get('rho_adaptive', True),
-                    rho_theta=config.get('rho_theta', 0.5),
-                    rho_increase_factor=config.get('rho_increase_factor', 2.0),
-                    rho_min=config.get('rho_min', 1e-3),
-                    rho_max=config.get('rho_max', 1e3),
+                    lambda_sim_up_lr=config.get('lambda_sim_up_lr', config.get('lambda_sim_lr', 0.01))
                 )
                 print(f"    Lagrangian Dual enabled: λ_dist(1)={config.get('lambda_dist_init', config.get('lambda_init', 0.1))}")
             else:
@@ -604,7 +593,7 @@ def main():
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
-        'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
+        'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'alpha': 0.1,  # Proximal regularization coefficient μ (FedProx standard: (μ/2) * ||w - w_t||²)
         
         # ========== Data Distribution ==========
@@ -625,33 +614,31 @@ def main():
         # Model configuration
         'model_name': 'distilbert-base-uncased',  # Hugging Face model name for classification
         'num_labels': 4,  # Number of classification labels
-                
+
+        # ========== Attack Configuration ==========
+        'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
+        
+        # ========== Formula 4 Constraint Parameters ==========
+        'dist_bound': None,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ dist_bound (None = use benign max distance)
+        'sim_center': None,  # Optional center for similarity bounds (None = use benign min/max)
+        
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
         'vgae_latent_dim': 32,  # VGAE latent space dimension (per paper: hidden2_dim=16)
         'vgae_dropout': 0,  # VGAE dropout rate (float, 0.0-1.0)
         'vgae_kl_weight': 0.1,  # Weight for KL divergence term in VGAE loss (float, default: 0.1)
-        # ========== Graph Construction Parameters ==========
-        'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)
-
-        # ========== Attack Configuration ==========
-        'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
-
+        
         # ========== Attack Optimization Parameters ==========
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
-
-        # ========== Formula 4 Constraint Parameters ==========
-        'dist_bound': None,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ dist_bound (None = use benign max distance)
-        'sim_center': None,  # Optional center for similarity bounds (None = use benign min/max)
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
@@ -664,21 +651,6 @@ def main():
         'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
         'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
         'lambda_sim_up_lr': 0.1,     # Learning rate for λ_sim_up(t) update
-
-        # ========== Augmented Lagrangian Method (ALM) Parameters ==========
-        # Standard ALM adds quadratic penalties: (ρ/2) * g(x)^2 for each inequality constraint g(x) ≤ 0.
-        'use_augmented_lagrangian': True,   # Enable Augmented Lagrangian (requires use_lagrangian_dual=True)
-        'lambda_update_mode': 'classic',    # "classic": λ += lr*g ; "alm": λ += ρ*g
-        # Penalty parameters ρ (per-constraint)
-        'rho_dist_init': 1.0,
-        'rho_sim_low_init': 1.0,
-        'rho_sim_up_init': 1.0,
-        # Adaptive ρ update (monotone increase)
-        'rho_adaptive': True,
-        'rho_theta': 0.5,            # If σ_k > theta * σ_{k-1} then increase ρ
-        'rho_increase_factor': 2.0,
-        'rho_min': 1e-3,
-        'rho_max': 1e3,
         
         # ========== Proxy Loss Estimation Parameters ==========
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
@@ -687,6 +659,9 @@ def main():
                                 # Used during gradient-based optimization (20 steps per round)
         'proxy_max_batches_eval': 4,  # Max batches for proxy loss in final evaluation (int)
                                 # Used for final attack objective logging (1 call per round)
+        
+        # ========== Graph Construction Parameters ==========
+        'graph_threshold': 0.5,  # Threshold for graph adjacency matrix binarization in VGAE (float, 0.0-1.0)
         
         # ========== Visualization ==========
         'generate_plots': True,  # Whether to generate visualization plots (bool)
