@@ -162,11 +162,10 @@ def setup_experiment(config):
 
     # 4. Initialize Global Model
     use_lora = config.get('use_lora', False)
-    model_name = config.get('model_name', 'distilbert-base-uncased')
     if use_lora:
-        print(f"Initializing global model ({model_name}) with LoRA...")
+        print("Initializing global model (DistilBERT) with LoRA...")
         global_model = NewsClassifierModel(
-            model_name=model_name,
+            model_name=config.get('model_name', 'distilbert-base-uncased'),
             num_labels=config.get('num_labels', 4),
             use_lora=True,
             lora_r=config.get('lora_r', 16),
@@ -175,9 +174,9 @@ def setup_experiment(config):
             lora_target_modules=config.get('lora_target_modules', None)
         )
     else:
-        print(f"Initializing global model ({model_name}) [Full Fine-tuning]...")
+        print("Initializing global model (DistilBERT) [Full Fine-tuning]...")
         global_model = NewsClassifierModel(
-            model_name=model_name,
+            model_name=config.get('model_name', 'distilbert-base-uncased'),
             num_labels=config.get('num_labels', 4),
             use_lora=False
         )
@@ -640,7 +639,7 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 7,  # Total number of federated learning clients (int)
-        'num_attackers': 0,  # Number of attacker clients (int, must be < num_clients)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -671,18 +670,14 @@ def main():
         'lora_dropout': 0.1,  # LoRA dropout rate
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
         # Model configuration
-        # Supported models:
-        #   Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
-        #   Decoder-only (GPT-style):  'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m', 'gpt2'
         'model_name': 'distilbert-base-uncased',  # Hugging Face model name for classification
-        # 'model_name': 'EleutherAI/pythia-160m',  # Alternative: Pythia-160M (Decoder-only, 160M params)
         'num_labels': 4,  # Number of classification labels (AG News: 4, IMDB: 2)
         'max_length': 128,  # Max token length for tokenizer. AG News: 128 (avg ~50 tokens), IMDB: 256-512 (avg ~230 tokens)
         
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
