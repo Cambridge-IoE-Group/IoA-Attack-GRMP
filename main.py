@@ -49,68 +49,113 @@ def setup_experiment(config):
         dataset_size_limit=config['dataset_size_limit'],
         batch_size=config['batch_size'],
         test_batch_size=config['test_batch_size'],
-        model_name=config.get('model_name', 'distilbert-base-uncased')
+        model_name=config.get('model_name', 'distilbert-base-uncased'),
+        max_length=config.get('max_length', 128)
     )
 
-    # 2. Partition data among clients (Non-IID distribution per paper)
-    # Per paper: "heterogeneous IoA system" with heterogeneous data distributions
-    print("\nPartitioning data (Non-IID distribution)...")
+    # 2. Partition data among clients
+    # Supports both IID and Non-IID distributions based on config
+    data_distribution = config.get('data_distribution', 'non-iid').lower()
     indices = np.arange(len(data_manager.train_texts))
     labels = np.array(data_manager.train_labels)
+    num_labels = 4
+    num_clients = config['num_clients']
+    num_attackers = config.get('num_attackers', 0)
+    num_benign = num_clients - num_attackers
     
     # Fixed shuffle for consistent partitioning across runs
     rng = np.random.default_rng(config['seed'])
     
-    # Non-IID distribution: Use Dirichlet distribution to create heterogeneous data
-    # Each client gets data with different label distributions
-    dirichlet_alpha = config['dirichlet_alpha']
-    num_labels = 4
-    client_indices = {i: [] for i in range(config['num_clients'])}
+    client_indices = {i: [] for i in range(num_clients)}
     
-    # Partition data by label first
-    label_indices = {label: [] for label in range(num_labels)}
-    for idx, label in enumerate(labels):
-        label_indices[label].append(idx)
-    
-    # Assign samples to clients using Dirichlet distribution for non-IID
-    for label in range(num_labels):
-        label_list = np.array(label_indices[label])
-        rng.shuffle(label_list)
+    if data_distribution == 'iid':
+        # ========== IID Distribution: Uniform Random Partition ==========
+        # Each client gets approximately equal number of samples with similar label distribution
+        print("\nPartitioning data (IID distribution)...")
         
-        # Generate proportions for each client using Dirichlet distribution
-        # Lower dirichlet_alpha creates more heterogeneous (non-IID) distribution
-        proportions = rng.dirichlet([dirichlet_alpha] * config['num_clients'])
-        proportions = np.cumsum(proportions)
-        proportions[-1] = 1.0  # Ensure last is exactly 1.0
+        # Shuffle all indices
+        all_indices = indices.copy()
+        rng.shuffle(all_indices)
         
-        # Assign samples based on proportions
+        # Calculate samples per client (approximately equal)
+        total_samples = len(all_indices)
+        base_samples = total_samples // num_clients
+        remainder = total_samples % num_clients
+        
+        # Assign samples to each client
         start_idx = 0
-        for client_id in range(config['num_clients']):
-            end_idx = int(len(label_list) * proportions[client_id])
-            client_indices[client_id].extend(label_list[start_idx:end_idx].tolist())
+        for client_id in range(num_clients):
+            # First 'remainder' clients get one extra sample
+            extra = 1 if client_id < remainder else 0
+            end_idx = start_idx + base_samples + extra
+            client_indices[client_id] = all_indices[start_idx:end_idx].tolist()
             start_idx = end_idx
+        
+        # Print distribution statistics
+        print(f"  IID distribution (uniform random partition)")
+        for client_id in range(num_clients):
+            client_labels = [labels[idx] for idx in client_indices[client_id]]
+            label_counts = {l: client_labels.count(l) for l in range(num_labels)}
+            total = len(client_indices[client_id])
+            if total > 0:
+                dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
+                client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+                print(f"    Client {client_id} ({client_type}): {total} samples ({dist_str})")
+            else:
+                client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+                print(f"    Client {client_id} ({client_type}): 0 samples WARNING: No data assigned!")
     
-    # Shuffle within each client to mix labels (but distribution remains non-IID)
-    for client_id in range(config['num_clients']):
-        client_list = np.array(client_indices[client_id])
-        rng.shuffle(client_list)
-        client_indices[client_id] = client_list.tolist()
-    
-    # Print distribution statistics
-    print(f"  Non-IID distribution (Dirichlet alpha={dirichlet_alpha})")
-    num_attackers = config.get('num_attackers', 0)  # Allow 0 attackers for baseline experiment
-    num_benign = config['num_clients'] - num_attackers
-    for client_id in range(config['num_clients']):  # Show all clients
-        client_labels = [labels[idx] for idx in client_indices[client_id]]
-        label_counts = {l: client_labels.count(l) for l in range(num_labels)}
-        total = len(client_indices[client_id])
-        if total > 0:
-            dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
-            client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
-            print(f"    Client {client_id} ({client_type}): {total} samples ({dist_str})")
-        else:
-            client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
-            print(f"    Client {client_id} ({client_type}): 0 samples WARNING: No data assigned!")
+    else:
+        # ========== Non-IID Distribution: Dirichlet-based Partition ==========
+        # Per paper: "heterogeneous IoA system" with heterogeneous data distributions
+        print("\nPartitioning data (Non-IID distribution)...")
+        
+        # Use Dirichlet distribution to create heterogeneous data
+        # Each client gets data with different label distributions
+        dirichlet_alpha = config['dirichlet_alpha']
+        
+        # Partition data by label first
+        label_indices = {label: [] for label in range(num_labels)}
+        for idx, label in enumerate(labels):
+            label_indices[label].append(idx)
+        
+        # Assign samples to clients using Dirichlet distribution for non-IID
+        for label in range(num_labels):
+            label_list = np.array(label_indices[label])
+            rng.shuffle(label_list)
+            
+            # Generate proportions for each client using Dirichlet distribution
+            # Lower dirichlet_alpha creates more heterogeneous (non-IID) distribution
+            proportions = rng.dirichlet([dirichlet_alpha] * num_clients)
+            proportions = np.cumsum(proportions)
+            proportions[-1] = 1.0  # Ensure last is exactly 1.0
+            
+            # Assign samples based on proportions
+            start_idx = 0
+            for client_id in range(num_clients):
+                end_idx = int(len(label_list) * proportions[client_id])
+                client_indices[client_id].extend(label_list[start_idx:end_idx].tolist())
+                start_idx = end_idx
+        
+        # Shuffle within each client to mix labels (but distribution remains non-IID)
+        for client_id in range(num_clients):
+            client_list = np.array(client_indices[client_id])
+            rng.shuffle(client_list)
+            client_indices[client_id] = client_list.tolist()
+        
+        # Print distribution statistics
+        print(f"  Non-IID distribution (Dirichlet alpha={dirichlet_alpha})")
+        for client_id in range(num_clients):
+            client_labels = [labels[idx] for idx in client_indices[client_id]]
+            label_counts = {l: client_labels.count(l) for l in range(num_labels)}
+            total = len(client_indices[client_id])
+            if total > 0:
+                dist_str = ", ".join([f"Label {l}: {label_counts[l]/total:.1%}" for l in range(num_labels)])
+                client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+                print(f"    Client {client_id} ({client_type}): {total} samples ({dist_str})")
+            else:
+                client_type = "BENIGN" if client_id < num_benign else "ATTACKER"
+                print(f"    Client {client_id} ({client_type}): 0 samples WARNING: No data assigned!")
 
     # 3. Get global test loader
     test_loader = data_manager.get_test_loader()
@@ -161,7 +206,8 @@ def setup_experiment(config):
             client_labels = [data_manager.train_labels[i] for i in client_indices[client_id]]
             
             # Create static dataloader for benign client
-            dataset = NewsDataset(client_texts, client_labels, data_manager.tokenizer)
+            dataset = NewsDataset(client_texts, client_labels, data_manager.tokenizer, 
+                                  max_length=config.get('max_length', 128))
             client_loader = DataLoader(dataset, batch_size=config['batch_size'], shuffle=True)
 
             print(f"  Client {client_id}: BENIGN ({len(client_indices[client_id])} samples)")
@@ -593,7 +639,7 @@ def main():
         
         # ========== Federated Learning Setup ==========
         'num_clients': 7,  # Total number of federated learning clients (int)
-        'num_attackers': 0,  # Number of attacker clients (int, must be < num_clients)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -608,7 +654,8 @@ def main():
         'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
         
         # ========== Data Distribution ==========
-        'dirichlet_alpha': 0.3,  # Make data less extreme non-IID (higher alpha = more balanced)
+        'data_distribution': 'non-iid',  # 'iid' for uniform random, 'non-iid' for Dirichlet-based heterogeneous distribution
+        'dirichlet_alpha': 0.3,  # Only used when data_distribution='non-iid'. Lower = more heterogeneous, higher = more balanced
         # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
         # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
@@ -624,12 +671,13 @@ def main():
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
         # Model configuration
         'model_name': 'distilbert-base-uncased',  # Hugging Face model name for classification
-        'num_labels': 4,  # Number of classification labels
-                
+        'num_labels': 4,  # Number of classification labels (AG News: 4, IMDB: 2)
+        'max_length': 128,  # Max token length for tokenizer. AG News: 128 (avg ~50 tokens), IMDB: 256-512 (avg ~230 tokens)
+        
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -659,7 +707,7 @@ def main():
         'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
         'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
-        'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraints (bool, True/False)
+        'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False)
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
         'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
         'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
