@@ -662,7 +662,7 @@ def main():
         # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
 
         # ========== Training Mode Configuration ==========
-        'use_lora': True,  # True for LoRA fine-tuning, False for full fine-tuning
+        'use_lora': False,  # True for LoRA fine-tuning, False for full fine-tuning
         # LoRA parameters (only used when use_lora=True)
         # NOTE: Lower r values = faster training but potentially less capacity
         # Recommended: r=8 for speed, r=16 for better performance (default)
@@ -682,7 +682,7 @@ def main():
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 10)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -700,7 +700,7 @@ def main():
         'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
         'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
-        'early_stop_constraint_stability_steps': 5,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
+        'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Formula 4 Constraint Parameters ==========
         'dist_bound': None,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ dist_bound (None = use benign max distance)
