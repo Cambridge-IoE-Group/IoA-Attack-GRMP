@@ -755,7 +755,7 @@ def main():
         # ========== Sign-Flipping Attack Parameters (only used when attack_method='SignFlipping') ==========
         'sign_flip_scale': 10.0,  # ICML '18: malicious = -scale * g_own (own update). Paper uses 10.
         'sign_flip_attack_start_round': None,  # Round to start Sign-Flipping attack (None = start immediately)
-        
+
 
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
