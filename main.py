@@ -293,6 +293,24 @@ def setup_experiment(config):
                     claimed_data_size=claimed_data_size,
                     grad_clip_norm=config.get('grad_clip_norm', 1.0)
                 )
+            elif attack_method == 'Gaussian':
+                # ========== Gaussian (Random Model Poisoning) Attack - USENIX Security '20 ==========
+                from attack_baseline_gaussian import GaussianAttackerClient
+                print(f"  Client {client_id}: ATTACKER (Gaussian Attack, USENIX Security '20)")
+                print(f"    Claimed data size D'_j(t): {claimed_data_size} (matches assigned data)")
+                gaussian_attack_start_round = config.get('gaussian_attack_start_round', None)
+                client = GaussianAttackerClient(
+                    client_id=client_id,
+                    model=global_model,
+                    data_manager=data_manager,
+                    data_indices=client_indices[client_id],
+                    lr=config['client_lr'],
+                    local_epochs=config['local_epochs'],
+                    alpha=config['alpha'],
+                    attack_start_round=gaussian_attack_start_round,
+                    claimed_data_size=claimed_data_size,
+                    grad_clip_norm=config.get('grad_clip_norm', 1.0)
+                )
             else:
                 # ========== GRMP Attack Client (default) ==========
                 print(f"  Client {client_id}: ATTACKER (GRMP Attack - VGAE Enabled)")
@@ -700,7 +718,7 @@ def main():
     config = {
         # ========== Experiment Configuration ==========
         'experiment_name': 'vgae_grmp_attack',  # Name for result files and logs
-        'seed': 42,  # Random seed for reproducibility (int), 42 is the default
+        'seed': 1,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
         'num_clients': 7,  # Total number of federated learning clients (int)
@@ -746,7 +764,7 @@ def main():
         
 
         # ========== Attack Configuration ==========
-        'attack_method': 'SignFlipping',  # Attack method: 'GRMP' (VGAE-based), 'ALIE' (statistical baseline), or 'SignFlipping' (sign-flip baseline)
+        'attack_method': 'Gaussian',  # Attack method: 'GRMP', 'ALIE', 'SignFlipping', or 'Gaussian' (random model poisoning baseline)
         'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
         
         # ========== ALIE Attack Parameters (only used when attack_method='ALIE') ==========
@@ -755,6 +773,8 @@ def main():
         # ========== Sign-Flipping Attack Parameters (only used when attack_method='SignFlipping') ==========
         'sign_flip_scale': 10.0,  # ICML '18: malicious = -scale * g_own (own update). Paper uses 10.
         'sign_flip_attack_start_round': None,  # Round to start Sign-Flipping attack (None = start immediately)
+        # ========== Gaussian Attack Parameters (only used when attack_method='Gaussian') ==========
+        'gaussian_attack_start_round': None,  # Round to start Gaussian attack (None = start immediately)
 
 
         # ========== VGAE Training Parameters ==========
@@ -763,8 +783,8 @@ def main():
         'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 20)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
-        'vgae_hidden_dim': 32,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
-        'vgae_latent_dim': 16,  # VGAE latent space dimension (per paper: hidden2_dim=16)
+        'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
+        'vgae_latent_dim': 32,  # VGAE latent space dimension (per paper: hidden2_dim=16)
         'vgae_dropout': 0,  # VGAE encoder dropout rate (0=no dropout, higher=more regularization to prevent overfitting)
         'vgae_kl_weight': 0.1,  # KL divergence weight in VGAE loss: L = L_recon + kl_weight * KL(q||p). Higher=stronger latent regularization
         # ========== Graph Construction Parameters ==========
@@ -828,6 +848,8 @@ def main():
             print("Running ALIE Attack (Model Poisoning Baseline)...")
         elif attack_method == 'SignFlipping':
             print("Running Sign-Flipping Attack (Model Poisoning Baseline)...")
+        elif attack_method == 'Gaussian':
+            print("Running Gaussian Attack (Random Model Poisoning Baseline)...")
         else:
             print("Running GRMP Attack with VGAE...")
     else:
