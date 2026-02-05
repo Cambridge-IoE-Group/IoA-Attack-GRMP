@@ -732,8 +732,8 @@ def main():
         # ========== Training Hyperparameters ==========
         'client_lr': 5e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
-        'batch_size': 64,  # Batch size for local training (int)
-        'test_batch_size': 128,  # Batch size for test/validation data loaders (int)
+        'batch_size': 128,  # Batch size for local training (int)
+        'test_batch_size': 256,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'grad_clip_norm': 1.0,  # Benign client local training (classification model). For Pythia-160m try 0.5 if nan
         'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
@@ -784,7 +784,7 @@ def main():
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 20)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -834,8 +834,8 @@ def main():
         'rho_max': 1e3,
         
         # ========== Proxy Loss Estimation Parameters ==========
-        'attacker_use_proxy_data': True,  # If True, GRMP attacker uses proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization)
-        'proxy_sample_size': 128,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
+        'attacker_use_proxy_data': False,  # If True, GRMP attacker uses proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization)
+        'proxy_sample_size': 256,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
         'proxy_max_batches_opt': 1,  # Max batches per _proxy_global_loss call in optimization loop (int)
                                 # Only has effect when proxy set has >1 batch (proxy_sample_size > test_batch_size).
