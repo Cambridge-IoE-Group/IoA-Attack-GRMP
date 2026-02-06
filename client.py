@@ -233,6 +233,9 @@ class BenignClient(Client):
         
         # Calculate update (will be on CPU)
         update = self.get_model_update(initial_params)
+        # If update contains nan/inf (e.g. decoder instability), return zero update to avoid poisoning aggregation
+        if not torch.isfinite(update).all():
+            update = torch.zeros_like(update, device=update.device, dtype=update.dtype)
         
         # Move model back to CPU to free GPU memory
         self.model.cpu()

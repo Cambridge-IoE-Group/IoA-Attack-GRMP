@@ -221,11 +221,26 @@ class Server:
                 w = len(getattr(client, 'data_indices', [])) or 1.0
             weights.append(w)
         
-        # Weighted aggregation (standard FedAvg)
+        # Replace non-finite updates with zeros and give them zero weight (e.g. Pythia decoder can produce nan)
         dtype = updates[0].dtype
-        stacked = torch.stack(updates).to(self.device)
+        device_updates = [u.to(self.device) for u in updates]
+        valid_weights = []
+        for i, u in enumerate(device_updates):
+            if not torch.isfinite(u).all():
+                device_updates[i] = torch.zeros_like(u, device=u.device, dtype=u.dtype)
+                valid_weights.append(0.0)
+            else:
+                valid_weights.append(weights[i])
+        weights = valid_weights
+        
+        # Weighted aggregation (standard FedAvg); only valid updates contribute
+        stacked = torch.stack(device_updates)
         weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
-        weight_tensor = weight_tensor / weight_tensor.sum()
+        w_sum = weight_tensor.sum()
+        if w_sum > 0:
+            weight_tensor = weight_tensor / w_sum
+        else:
+            weight_tensor = torch.ones_like(weight_tensor, device=self.device, dtype=dtype) / len(weights)
         aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
         aggregated_update_norm = torch.norm(aggregated_update).item()
         del stacked
