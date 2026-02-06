@@ -1154,6 +1154,11 @@ class AttackerClient(Client):
                     # Maintains requires_grad=True throughout, preserving computational graph
                     lora_params = self._flat_to_lora_param_dict(candidate_lora_flat)
                     
+                    # Step 2.5: Ensure dtype consistency (base may be float16, LoRA flat is often float32)
+                    # functional_call fails with "mat1 and mat2 to have the same dtype, but got: Half != float"
+                    target_dtype = next(iter(self.base_params.values())).dtype
+                    lora_params = {n: t.to(target_dtype) for n, t in lora_params.items()}
+                    
                     # Step 3: Construct full_params = base_params (constants) + lora_params (trainable)
                     # CRITICAL: base_params are detached constants (requires_grad=False),
                     #          lora_params maintain gradients (requires_grad=True)

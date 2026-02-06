@@ -95,8 +95,12 @@ class NewsClassifierModel(nn.Module):
         if self.architecture == 'decoder':
             pad_id = getattr(self.model.config, 'pad_token_id', None)
             if pad_id is None:
-                # Use eos_token_id as pad_token_id (common practice for GPT-style models)
-                self.model.config.pad_token_id = self.model.config.eos_token_id
+                eos_id = getattr(self.model.config, 'eos_token_id', None)
+                if eos_id is not None:
+                    self.model.config.pad_token_id = eos_id
+                else:
+                    # Fallback: Pythia/GPT-NeoX 常用 0 作为 EOS
+                    self.model.config.pad_token_id = 0
         
         # Verify that the correct model is loaded
         model_type = type(self.model).__name__
