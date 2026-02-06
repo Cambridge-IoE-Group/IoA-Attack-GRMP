@@ -187,39 +187,32 @@ class NewsClassifierModel(nn.Module):
         - GPT-style (Decoder): 'score' (e.g., GPT2ForSequenceClassification, GPTNeoXForSequenceClassification)
         
         Decoder-only (GPT-NeoX/Pythia) uses smaller init to avoid large initial logits and loss=nan.
-        PEFT-wrapped models: try base_model and base_model.model so the head is never missed.
         """
         with torch.no_grad():
             classifier_names = ['classifier', 'score']
-            # Decoder (Pythia/GPT-NeoX) is more sensitive: use smaller std to avoid logit explosion and nan
+            # Decoder (Pythia/GPT-NeoX) is more sensitive: small init avoids gradient explosion / nan
             use_small_init = self.architecture == 'decoder'
-            small_std = 0.01 if self.architecture == 'decoder' else 0.02  # Pythia: 0.01 to keep logits in range
             
             def _init_head(clf):
                 if hasattr(clf, 'weight'):
                     if use_small_init:
-                        nn.init.normal_(clf.weight, mean=0.0, std=small_std)
+                        nn.init.normal_(clf.weight, mean=0.0, std=0.02)
                     else:
                         nn.init.xavier_uniform_(clf.weight)
                 if hasattr(clf, 'bias') and clf.bias is not None:
                     nn.init.zeros_(clf.bias)
             
-            def _try_init(m):
-                if m is None:
-                    return False
-                for cls_name in classifier_names:
-                    if hasattr(m, cls_name):
-                        _init_head(getattr(m, cls_name))
-                        return True
-                return False
-            
             if self.use_lora and hasattr(self.model, 'base_model'):
-                # PEFT: head usually on base_model (e.g. GPTNeoXForSequenceClassification.score), then try base_model.model
-                b = self.model.base_model
-                if not _try_init(b):
-                    _try_init(getattr(b, 'model', None))
+                base_model = self.model.base_model.model
+                for cls_name in classifier_names:
+                    if hasattr(base_model, cls_name):
+                        _init_head(getattr(base_model, cls_name))
+                        break
             else:
-                _try_init(self.model)
+                for cls_name in classifier_names:
+                    if hasattr(self.model, cls_name):
+                        _init_head(getattr(self.model, cls_name))
+                        break
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass returning logits."""
