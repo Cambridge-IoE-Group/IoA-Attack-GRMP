@@ -943,6 +943,9 @@ class AttackerClient(Client):
                     base_param = param.data.clone().detach().to(target_device)
                 self.base_params[name] = base_param
         
+        # Cache model dtype for LoRA param unification (avoids "Half != float" in functional_call)
+        self._functional_param_dtype = next(iter(self.base_params.values())).dtype if self.base_params else torch.float32
+        
         # Step 3: Build buffers dict (detached)
         self.base_buffers = {}
         for name, buffer in self.model.named_buffers():
@@ -985,12 +988,15 @@ class AttackerClient(Client):
               f"{len(self.lora_param_names)} LoRA params, {len(self.base_params)} base params, "
               f"{len(self.base_buffers)} buffers")
 
-    def _flat_to_lora_param_dict(self, flat_lora: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _flat_to_lora_param_dict(self, flat_lora: torch.Tensor, target_dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
         """
         Convert flat LoRA tensor to parameter dict for functional_call.
         
         CRITICAL: This preserves gradients by using view/reshape operations only.
         No .data operations that would break the computational graph.
+        
+        If target_dtype is set, each LoRA tensor is cast to that dtype (e.g. to match
+        base model dtype and avoid "mat1 and mat2 to have the same dtype" errors).
         
         How it works:
         - Uses pre-computed slices (from _init_functional_param_cache) to extract
@@ -1001,6 +1007,7 @@ class AttackerClient(Client):
         Args:
             flat_lora: 1D flat LoRA parameter tensor (requires_grad=True, on GPU)
                       Should have shape (self._flat_numel,)
+            target_dtype: If not None, cast each LoRA param to this dtype (e.g. model dtype).
         
         Returns:
             Dictionary mapping LoRA parameter names to shaped tensors (preserves gradients)
@@ -1020,7 +1027,10 @@ class AttackerClient(Client):
             sl = self.lora_param_slices[name]
             shape = self.lora_param_shapes[name]
             # CRITICAL: Use view/reshape to preserve gradients, no copy_() or .data assignment
-            out[name] = flat_lora[sl].view(shape)
+            p = flat_lora[sl].view(shape)
+            if target_dtype is not None and p.dtype != target_dtype:
+                p = p.to(target_dtype)
+            out[name] = p
         
         return out
 
@@ -1099,8 +1109,6 @@ class AttackerClient(Client):
             else:
                 global_params_gpu = self.global_model_params
             
-            candidate_params = global_params_gpu + malicious_update
-            
             # CRITICAL: Check LoRA mode BEFORE processing to avoid unnecessary work
             use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
             
@@ -1108,6 +1116,13 @@ class AttackerClient(Client):
             # This must be done before any parameter processing
             if use_lora:
                 self._init_functional_param_cache(target_device)
+                # Unify dtype: base params may be float16 (Half) while aggregated updates are float32.
+                # functional_call requires all params to share the same dtype to avoid "mat1 and mat2 to have the same dtype" errors.
+                target_dtype = getattr(self, '_functional_param_dtype', torch.float32)
+                global_params_gpu = global_params_gpu.to(target_dtype)
+                malicious_update = malicious_update.to(target_dtype)
+            
+            candidate_params = global_params_gpu + malicious_update
             # ===================================================================
             
             # For full fine-tuning mode, prepare param_dict (LoRA mode doesn't need this)
@@ -1171,7 +1186,9 @@ class AttackerClient(Client):
                     # Step 2: Convert flat LoRA to param dict (preserves gradients via view/reshape)
                     # Uses pre-computed slices from _init_functional_param_cache to extract each parameter
                     # Maintains requires_grad=True throughout, preserving computational graph
-                    lora_params = self._flat_to_lora_param_dict(candidate_lora_flat)
+                    # Cast LoRA params to model dtype so functional_call does not mix Half and float
+                    target_dtype = getattr(self, '_functional_param_dtype', torch.float32)
+                    lora_params = self._flat_to_lora_param_dict(candidate_lora_flat, target_dtype=target_dtype)
                     
                     # Step 3: Construct full_params = base_params (constants) + lora_params (trainable)
                     # CRITICAL: base_params are detached constants (requires_grad=False),
