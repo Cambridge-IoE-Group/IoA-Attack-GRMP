@@ -935,19 +935,21 @@ class AttackerClient(Client):
                 offset += numel
         
         # Step 2: Build base parameters dict (frozen parameters, detached)
+        # CRITICAL: Cast to float32 so functional_call uses consistent dtype. Otherwise
+        # base may be half (e.g. Pythia on GPU) and LoRA params float32 -> "Half != float" error.
         self.base_params = {}
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
-                # Frozen base parameter - detach and move to target device
+                # Frozen base parameter - detach, move to device, and cast to float32
                 with torch.no_grad():
-                    base_param = param.data.clone().detach().to(target_device)
+                    base_param = param.data.clone().detach().to(device=target_device, dtype=torch.float32)
                 self.base_params[name] = base_param
         
-        # Step 3: Build buffers dict (detached)
+        # Step 3: Build buffers dict (detached), same dtype as params for matmul consistency
         self.base_buffers = {}
         for name, buffer in self.model.named_buffers():
             with torch.no_grad():
-                base_buffer = buffer.data.clone().detach().to(target_device)
+                base_buffer = buffer.data.clone().detach().to(device=target_device, dtype=torch.float32)
             self.base_buffers[name] = base_buffer
         
         # Step 4: Consistency assertions (CRITICAL)
@@ -1165,8 +1167,9 @@ class AttackerClient(Client):
                     
                     # Step 1: Ensure candidate is LoRA-only flat (from global + malicious_update)
                     # candidate_params is already computed as: global_params_gpu + malicious_update
-                    # Both global_params_gpu and malicious_update are LoRA-only flat tensors
-                    candidate_lora_flat = candidate_params
+                    # Both global_params_gpu and malicious_update are LoRA-only flat tensors.
+                    # Ensure float32 so all params in functional_call match (base_params are float32).
+                    candidate_lora_flat = candidate_params.float() if candidate_params.dtype != torch.float32 else candidate_params
                     
                     # Step 2: Convert flat LoRA to param dict (preserves gradients via view/reshape)
                     # Uses pre-computed slices from _init_functional_param_cache to extract each parameter
@@ -1179,14 +1182,16 @@ class AttackerClient(Client):
                     full_params = dict(self.base_params)  # Shallow copy of base params (detached)
                     full_params.update(lora_params)  # Add LoRA params (with gradients)
                     
-                    # Step 4: Ensure base_buffers are on correct device
+                    # Step 4: Ensure base_buffers are on correct device and dtype (float32)
                     # Buffers are constants (e.g., batch norm running means), no gradients needed
                     full_buffers = {}
                     for name, buf in self.base_buffers.items():
-                        if not self._device_matches(buf.device, target_device):
-                            full_buffers[name] = buf.to(target_device)
-                        else:
-                            full_buffers[name] = buf
+                        b = buf
+                        if not self._device_matches(b.device, target_device):
+                            b = b.to(target_device)
+                        if b.dtype != torch.float32:
+                            b = b.to(dtype=torch.float32)
+                        full_buffers[name] = b
                     
                     # Step 5: Use functional_call for forward pass (preserves gradients)
                     # CRITICAL: This is the ONLY valid path - no fallback allowed
