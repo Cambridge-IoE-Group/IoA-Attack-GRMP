@@ -209,6 +209,16 @@ class BenignClient(Client):
                 
                 loss = ce_loss + proximal_term
                 
+                if not torch.isfinite(loss).item():
+                    # Skip batch on nan/inf to avoid corrupting model (e.g. Pythia-160m can be unstable)
+                    import warnings
+                    warnings.warn(
+                        f"[Client {self.client_id}] Skipping batch: loss={loss.item()} (non-finite). "
+                        "Consider lowering client_lr or grad_clip_norm for decoder models (e.g. Pythia-160m)."
+                    )
+                    pbar.set_postfix({'loss': 'nan(skip)'})
+                    continue
+                
                 self.optimizer.zero_grad()
                 loss.backward()
                 
@@ -257,7 +267,9 @@ class AttackerClient(Client):
                  vgae_kl_weight=0.1,
                  proxy_steps=20,
                  grad_clip_norm=1.0,
-                 early_stop_constraint_stability_steps=3):
+                 proxy_grad_clip_norm=None,
+                 early_stop_constraint_stability_steps=3,
+                 use_proxy_data=True):
         """
         Initialize an attacker client with VGAE-based camouflage capabilities.
         
@@ -284,7 +296,9 @@ class AttackerClient(Client):
             vgae_dropout: VGAE dropout rate (default: 0.0)
             vgae_kl_weight: Weight for KL divergence term in VGAE loss (default: 0.1)
             proxy_steps: Number of optimization steps for attack objective (default: 20)
-            grad_clip_norm: Gradient clipping norm for training stability (default: 1.0)
+            grad_clip_norm: Kept for compatibility; proxy step uses proxy_grad_clip_norm if set.
+            proxy_grad_clip_norm: Gradient clipping for GRMP proxy parameter update only (default: None = use grad_clip_norm). Separate from benign client training.
+            use_proxy_data: If True, use proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization) (default: True)
         
         Note: lr, local_epochs, and alpha must be explicitly provided to ensure consistency
         with config settings. Other parameters have defaults but should be set via config in main.py.
@@ -308,7 +322,9 @@ class AttackerClient(Client):
         self.vgae_kl_weight = vgae_kl_weight
         self.proxy_steps = proxy_steps
         self.grad_clip_norm = grad_clip_norm
+        self.proxy_grad_clip_norm = proxy_grad_clip_norm if proxy_grad_clip_norm is not None else grad_clip_norm
         self.early_stop_constraint_stability_steps = early_stop_constraint_stability_steps
+        self.use_proxy_data = use_proxy_data
 
         dummy_loader = data_manager.get_empty_loader()
         super().__init__(client_id, model, dummy_loader, lr, local_epochs, alpha)
@@ -328,7 +344,10 @@ class AttackerClient(Client):
         
         # Data-agnostic attack: no local data usage
         self.original_business_loader = None
-        self.proxy_loader = data_manager.get_proxy_eval_loader(sample_size=self.proxy_sample_size)
+        if use_proxy_data:
+            self.proxy_loader = data_manager.get_proxy_eval_loader(sample_size=self.proxy_sample_size)
+        else:
+            self.proxy_loader = None  # No data access; optimization will use constraint terms only
         
         # Formula 4 constraints parameters
         self.dist_bound = None  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ dist_bound
@@ -2704,16 +2723,15 @@ class AttackerClient(Client):
         # According to paper Equation 12, we maximize F(w'_g(t)) subject to constraints
         # ============================================================
         # CRITICAL: Hard preconditions check before optimization
-        # LoRA mode requires strict gradient validation, so we must ensure prerequisites
-        if self.global_model_params is None or self.proxy_loader is None:
+        # global_model_params is always required; proxy_loader is optional (when use_proxy_data=False, no data access)
+        if self.global_model_params is None:
             error_msg = (
-                f"[Attacker {self.client_id}] Missing prerequisites before optimization:\n"
-                f"  - global_model_params: {self.global_model_params is None}\n"
-                f"  - proxy_loader: {self.proxy_loader is None}\n"
-                f"Cannot proceed with LoRA gradient validation requirements."
+                f"[Attacker {self.client_id}] Missing global_model_params before optimization. Cannot proceed."
             )
             print(f"    {error_msg}")
             raise RuntimeError(error_msg)
+        if self.proxy_loader is None:
+            print(f"    [Attacker {self.client_id}] No proxy data (attacker_use_proxy_data=False); optimizing constraints only (no F(w'_g) term).")
         
         # Verify global_model_params dimension matches _flat_numel (LoRA mode requirement)
         use_lora = hasattr(self.model, 'use_lora') and self.model.use_lora
@@ -3408,8 +3426,8 @@ class AttackerClient(Client):
                         ) from e
             # ===========================================================
             
-            # Gradient clipping to prevent explosion
-            torch.nn.utils.clip_grad_norm_([proxy_param], max_norm=self.grad_clip_norm)
+            # Gradient clipping for proxy parameter update (separate from benign client training)
+            torch.nn.utils.clip_grad_norm_([proxy_param], max_norm=self.proxy_grad_clip_norm)
             
             proxy_opt.step()
             

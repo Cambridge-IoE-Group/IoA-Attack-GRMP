@@ -266,6 +266,51 @@ def setup_experiment(config):
                     claimed_data_size=claimed_data_size,
                     grad_clip_norm=config.get('grad_clip_norm', 1.0)
                 )
+            elif attack_method == 'SignFlipping':
+                # ========== Sign-Flipping Attack Client (ICML '18: g^byz = -scale * g_own) ==========
+                from attack_baseline_sign_flipping import SignFlippingAttackerClient
+                print(f"  Client {client_id}: ATTACKER (Sign-Flipping Attack, ICML '18)")
+                print(f"    Claimed data size D'_j(t): {claimed_data_size} (matches assigned data)")
+                # Build DataLoader for attacker so it can compute g_own (same as benign client)
+                client_texts_sf = [data_manager.train_texts[i] for i in client_indices[client_id]]
+                client_labels_sf = [data_manager.train_labels[i] for i in client_indices[client_id]]
+                dataset_sf = NewsDataset(client_texts_sf, client_labels_sf, data_manager.tokenizer,
+                                         max_length=config.get('max_length', 128))
+                client_loader_sf = DataLoader(dataset_sf, batch_size=config['batch_size'], shuffle=True)
+                sign_flip_scale = config.get('sign_flip_scale', 10.0)
+                sign_flip_attack_start_round = config.get('sign_flip_attack_start_round', None)
+                client = SignFlippingAttackerClient(
+                    client_id=client_id,
+                    model=global_model,
+                    data_manager=data_manager,
+                    data_indices=client_indices[client_id],
+                    lr=config['client_lr'],
+                    local_epochs=config['local_epochs'],
+                    alpha=config['alpha'],
+                    data_loader=client_loader_sf,
+                    sign_flip_scale=sign_flip_scale,
+                    attack_start_round=sign_flip_attack_start_round,
+                    claimed_data_size=claimed_data_size,
+                    grad_clip_norm=config.get('grad_clip_norm', 1.0)
+                )
+            elif attack_method == 'Gaussian':
+                # ========== Gaussian (Random Model Poisoning) Attack - USENIX Security '20 ==========
+                from attack_baseline_gaussian import GaussianAttackerClient
+                print(f"  Client {client_id}: ATTACKER (Gaussian Attack, USENIX Security '20)")
+                print(f"    Claimed data size D'_j(t): {claimed_data_size} (matches assigned data)")
+                gaussian_attack_start_round = config.get('gaussian_attack_start_round', None)
+                client = GaussianAttackerClient(
+                    client_id=client_id,
+                    model=global_model,
+                    data_manager=data_manager,
+                    data_indices=client_indices[client_id],
+                    lr=config['client_lr'],
+                    local_epochs=config['local_epochs'],
+                    alpha=config['alpha'],
+                    attack_start_round=gaussian_attack_start_round,
+                    claimed_data_size=claimed_data_size,
+                    grad_clip_norm=config.get('grad_clip_norm', 1.0)
+                )
             else:
                 # ========== GRMP Attack Client (default) ==========
                 print(f"  Client {client_id}: ATTACKER (GRMP Attack - VGAE Enabled)")
@@ -274,6 +319,9 @@ def setup_experiment(config):
                 else:
                     print(f"    WARNING: Override: Claimed data size D'_j(t): {claimed_data_size} (actual: {actual_data_size})")
                 
+                use_proxy = config.get('attacker_use_proxy_data', True)
+                if not use_proxy:
+                    print(f"    Attacker proxy data disabled (attacker_use_proxy_data=False); no dataset access.")
                 client = AttackerClient(
                 client_id=client_id,
                 model=global_model,
@@ -297,7 +345,9 @@ def setup_experiment(config):
                 vgae_kl_weight=config['vgae_kl_weight'],
                 proxy_steps=config['proxy_steps'],
                 grad_clip_norm=config['grad_clip_norm'],
-                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3)
+                proxy_grad_clip_norm=config.get('attacker_proxy_grad_clip_norm', 1.0),
+                early_stop_constraint_stability_steps=config.get('early_stop_constraint_stability_steps', 3),
+                use_proxy_data=use_proxy
             )
             
             # Set Lagrangian Dual parameters (if using)
@@ -683,8 +733,9 @@ def main():
         'client_lr': 5e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
-        'test_batch_size': 256,  # Batch size for test/validation data loaders (int)
+        'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
+        'grad_clip_norm': 1.0,  # Benign client local training (classification model). For Pythia-160m try 0.5 if nan
         'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
         
         # ========== Data Distribution ==========
@@ -703,19 +754,37 @@ def main():
         'lora_alpha': 16,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
         'lora_dropout': 0.1,  # LoRA dropout rate
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
+        
         # Model configuration
         # Supported models:
-        #   Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
-        #   Decoder-only (GPT-style):  'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m', 'gpt2'
-        # 'model_name': 'distilbert-base-uncased',  # Hugging Face model name for classification
-        'model_name': 'EleutherAI/pythia-160m',  # Alternative: Pythia-160M (Decoder-only, 160M params)
+        # Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
+        # 'model_name': 'distilbert-base-uncased',  # distilbert 67M
+
+        # Decoder-only (GPT-style):  'gpt2' (recommended baseline), 'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m'
+        # 'model_name': 'gpt2',                      # GPT-2 124M — most stable decoder baseline (OpenAI, widely used)
+        'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (GPT-NeoX arch, 160M params)
+        # 'model_name': 'facebook/opt-125m',         # OPT-125M (Meta, 125M params)
         'num_labels': 4,  # Number of classification labels (AG News: 4, IMDB: 2)
         'max_length': 128,  # Max token length for tokenizer. AG News: 128 (avg ~50 tokens), IMDB: 256-512 (avg ~230 tokens)
         
+
+        # ========== Attack Configuration ==========
+        'attack_method': 'Gaussian',  # Attack method: 'GRMP', 'ALIE', 'SignFlipping', or 'Gaussian' (random model poisoning baseline)
+        'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
+        
+        # ========== ALIE Attack Parameters (only used when attack_method='ALIE') ==========
+        'alie_z_max': None,  # NeurIPS '19: z-score multiplier for ALIE. None = auto-compute based on num_clients and num_attackers
+        'alie_attack_start_round': None,  # Round to start ALIE attack (None = start immediately, overrides attack_start_round)
+        # ========== Sign-Flipping Attack Parameters (only used when attack_method='SignFlipping') ==========
+        'sign_flip_scale': 10.0,  # ICML '18: malicious = -scale * g_own (own update). Paper uses 10.
+        'sign_flip_attack_start_round': None,  # Round to start Sign-Flipping attack (None = start immediately)
+        # ========== Gaussian Attack Parameters (only used when attack_method='Gaussian') ==========
+        'gaussian_attack_start_round': None,  # Round to start Gaussian attack (None = start immediately)
+
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 100,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 20)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -725,18 +794,10 @@ def main():
         # ========== Graph Construction Parameters ==========
         'graph_threshold': 0.5,  # Cosine similarity threshold for adjacency matrix: A[i,j]=1 if sim(Δ_i,Δ_j)>threshold, else 0. Higher=sparser graph
 
-        # ========== Attack Configuration ==========
-        'attack_method': 'GRMP',  # Attack method: 'GRMP' (VGAE-based) or 'ALIE' (statistical baseline)
-        'attack_start_round': 0,  # Round when attack phase starts (int, now all rounds use complete poisoning)
-        
-        # ========== ALIE Attack Parameters (only used when attack_method='ALIE') ==========
-        'alie_z_max': None,  # Z-score multiplier for ALIE. None = auto-compute based on num_clients and num_attackers
-        'alie_attack_start_round': None,  # Round to start ALIE attack (None = start immediately, overrides attack_start_round)
-
         # ========== GRMP Attack Optimization Parameters ==========
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 200,  # Number of optimization steps for attack objective (int)
-        'grad_clip_norm': 1.0,  # Gradient clipping norm for training stability (float)
+        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
+        'attacker_proxy_grad_clip_norm': 1.0,  # GRMP attacker proxy parameter update only; separate from benign training
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
@@ -749,8 +810,9 @@ def main():
         # Distance constraint multiplier parameters
         'lambda_dist_init': 0.1,  # Initial λ_dist(t) value for distance constraint: dist(Δ_att, Δ_g) ≤ dist_bound
         'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
-        # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) ==========
-        'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False)
+        
+        # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) False by default ==========
+        'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False) False by default!
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
         'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
         'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
@@ -769,15 +831,15 @@ def main():
         'rho_theta': 0.5,            # If σ_k > theta * σ_{k-1} then increase ρ
         'rho_increase_factor': 2.0,
         'rho_min': 1e-3,
-        'rho_max': 1e4,
+        'rho_max': 1e3,
         
         # ========== Proxy Loss Estimation Parameters ==========
+        'attacker_use_proxy_data': True,  # If True, GRMP attacker uses proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization)
         'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
-        'proxy_max_batches_opt': 1,  # Max batches for proxy loss in optimization loop (int)
-                                # Used during gradient-based optimization (20 steps per round)
-        'proxy_max_batches_eval': 2,  # Max batches for proxy loss in final evaluation (int)
-                                # Used for final attack objective logging (1 call per round)
+        'proxy_max_batches_opt': 1,  # Max batches per _proxy_global_loss call in optimization loop (int)
+                                # Only has effect when proxy set has >1 batch (proxy_sample_size > test_batch_size).
+        'proxy_max_batches_eval': 1,  # Max batches per _proxy_global_loss call in final evaluation (int)
         
         # ========== Visualization ==========
         'generate_plots': True,  # Whether to generate visualization plots (bool)
@@ -788,6 +850,10 @@ def main():
         attack_method = config.get('attack_method', 'GRMP')
         if attack_method == 'ALIE':
             print("Running ALIE Attack (Model Poisoning Baseline)...")
+        elif attack_method == 'SignFlipping':
+            print("Running Sign-Flipping Attack (Model Poisoning Baseline)...")
+        elif attack_method == 'Gaussian':
+            print("Running Gaussian Attack (Random Model Poisoning Baseline)...")
         else:
             print("Running GRMP Attack with VGAE...")
     else:
