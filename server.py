@@ -211,9 +211,6 @@ class Server:
         self._current_client_ids = client_ids
         self._sorted_client_ids = client_ids
         
-        if not updates:
-            raise ValueError("aggregate_updates called with empty updates list")
-        
         # Standard FedAvg aggregation
         weights = []
         for cid in client_ids:
@@ -224,12 +221,9 @@ class Server:
                 w = len(getattr(client, 'data_indices', [])) or 1.0
             weights.append(w)
         
-        # Use global model dtype so aggregated update matches (important for half-precision models e.g. Pythia)
-        target_dtype = self.global_model.get_flat_params().dtype
-        updates_device = [u.to(self.device, dtype=target_dtype) for u in updates]
         # Weighted aggregation (standard FedAvg)
-        dtype = updates_device[0].dtype
-        stacked = torch.stack(updates_device).to(self.device)
+        dtype = updates[0].dtype
+        stacked = torch.stack(updates).to(self.device)
         weight_tensor = torch.tensor(weights, device=self.device, dtype=dtype)
         weight_tensor = weight_tensor / weight_tensor.sum()
         aggregated_update = (stacked * weight_tensor.view(-1, 1)).sum(dim=0)
