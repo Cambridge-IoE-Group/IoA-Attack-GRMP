@@ -723,7 +723,7 @@ def main():
     config = {
         # ========== Experiment Configuration ==========
         'experiment_name': 'vgae_grmp_attack',  # Name for result files and logs
-        'seed': 42,  # Random seed for reproducibility (int), 42 is the default
+        'seed': 42069,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
         'num_clients': 7,  # Total number of federated learning clients (int)
@@ -737,10 +737,10 @@ def main():
         'client_lr': 5e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
-        'test_batch_size': 256,  # Batch size for test/validation data loaders (int)
+        'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'grad_clip_norm': 1.0,  # Benign client local training (classification model). For Pythia-160m try 0.5 if nan
-        'alpha': 0.1,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
+        'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
         
         # ========== Data Distribution ==========
         'data_distribution': 'non-iid',  # 'iid' for uniform random, 'non-iid' for Dirichlet-based heterogeneous distribution
@@ -754,19 +754,19 @@ def main():
         # LoRA parameters (only used when use_lora=True)
         # NOTE: Lower r values = faster training but potentially less capacity
         # Recommended: r=8 for speed, r=16 for better performance (default)
-        'lora_r': 16,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
-        'lora_alpha': 32,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
+        'lora_r': 8,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
+        'lora_alpha': 16,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
         'lora_dropout': 0.1,  # LoRA dropout rate
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
         
         # Model configuration
         # Supported models:
         # Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
-        # 'model_name': 'distilbert-base-uncased',  # distilbert 67M
+        'model_name': 'distilbert-base-uncased',  # distilbert 67M
 
         # Decoder-only (GPT-style):  'gpt2' (recommended baseline), 'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m'
         # 'model_name': 'gpt2',                      # GPT-2 124M — most stable decoder baseline (OpenAI, widely used)
-        'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (GPT-NeoX arch, 160M params)
+        # 'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (GPT-NeoX arch, 160M params)
         # 'model_name': 'facebook/opt-125m',         # OPT-125M (Meta, 125M params)
         'num_labels': 4,  # Number of classification labels (AG News: 4, IMDB: 2)
         'max_length': 128,  # Max token length for tokenizer. AG News: 128 (avg ~50 tokens), IMDB: 256-512 (avg ~230 tokens)
@@ -803,7 +803,7 @@ def main():
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'attacker_proxy_grad_clip_norm': 1.0,  # GRMP attacker proxy parameter update only; separate from benign training
-        'attacker_claimed_data_size': None,  # None = use actual assigned data size
+        'attacker_claimed_data_size': 5000,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Formula 4 Constraint Parameters ==========
