@@ -585,6 +585,50 @@ def print_detailed_statistics(server_log_data, progressive_metrics, local_accura
     
     print("-" * 80)
     
+    # ========== 2b. Euclidean Distance Table ==========
+    print("\n" + "-" * 80)
+    print("2b. EUCLIDEAN DISTANCE (Per Round, Per Client)")
+    print("-" * 80)
+    header = "Round | "
+    for cid in all_client_ids:
+        client_type = "A" if cid in attacker_ids_set else "B"
+        header += f"Client{cid}({client_type}) | "
+    header += "Mean | Std"
+    print(header)
+    print("-" * 80)
+    for log in server_log_data:
+        round_num = log['round']
+        aggregation = log.get('aggregation', {})
+        euclidean_distances = aggregation.get('euclidean_distances', [])
+        accepted = aggregation.get('accepted_clients', [])
+        all_clients_round = sorted(set(accepted))
+        dist_map = {}
+        if len(euclidean_distances) == len(all_clients_round):
+            for idx, cid in enumerate(all_clients_round):
+                dist_map[cid] = euclidean_distances[idx]
+        row = f"{round_num:<6} | "
+        for cid in all_client_ids:
+            d = dist_map.get(cid, 0.0)
+            row += f"{d:<14.6f} | "
+        dist_values = [dist_map.get(cid, 0.0) for cid in all_client_ids if cid in dist_map]
+        mean_d = np.mean(dist_values) if dist_values else 0.0
+        std_d = np.std(dist_values) if len(dist_values) > 1 else 0.0
+        row += f"{mean_d:<6.6f} | {std_d:.6f}"
+        print(row)
+    print("-" * 80)
+    
+    # ========== 2c. Global Loss (Per Round) ==========
+    print("\n" + "-" * 80)
+    print("2c. GLOBAL LOSS (Per Round)")
+    print("-" * 80)
+    print(f"{'Round':<8} | {'Global Loss':<15}")
+    print("-" * 80)
+    for log in server_log_data:
+        round_num = log['round']
+        global_loss = log.get('global_loss', 0.0)
+        print(f"{round_num:<8} | {global_loss:<15.6f}")
+    print("-" * 80)
+    
     # ========== 3. Local Accuracy Table ==========
     print("\n" + "-" * 80)
     print("3️⃣  LOCAL ACCURACY (Per Round, Per Client)")
@@ -789,7 +833,7 @@ def main():
         # ========== VGAE Training Parameters ==========
         # Reference paper: input_dim=5, hidden1_dim=32, hidden2_dim=16, num_epoch=10, lr=0.01
         # Note: dim_reduction_size should be <= total trainable parameters
-        'dim_reduction_size': 500,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
+        'dim_reduction_size': 5000,  # Reduced dimensionality of LLM parameters (auto-adjusted for LoRA if needed)
         'vgae_epochs': 20,  # Number of epochs for VGAE training (reference: 20)
         'vgae_lr': 0.01,  # Learning rate for VGAE optimizer (reference: 0.01)
         'vgae_hidden_dim': 64,  # VGAE hidden layer dimension (per paper: hidden1_dim=32)
@@ -803,7 +847,7 @@ def main():
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
         'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
         'attacker_proxy_grad_clip_norm': 1.0,  # GRMP attacker proxy parameter update only; separate from benign training
-        'attacker_claimed_data_size': 5000,  # None = use actual assigned data size
+        'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Formula 4 Constraint Parameters ==========
@@ -836,7 +880,7 @@ def main():
         'rho_theta': 0.5,            # If σ_k > theta * σ_{k-1} then increase ρ
         'rho_increase_factor': 2.0,
         'rho_min': 1e-3,
-        'rho_max': 1e4,
+        'rho_max': 1e3,
         
         # ========== Proxy Loss Estimation Parameters ==========
         'attacker_use_proxy_data': True,  # If True, GRMP attacker uses proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization)
