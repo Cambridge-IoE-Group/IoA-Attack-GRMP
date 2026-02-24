@@ -1,6 +1,5 @@
 # data_loader.py
-# data_loader.py for AG News dataset handling
-# This module loads and preprocesses AG News for federated experiments.
+# Data loader for text classification (AG News, IMDB, DBpedia) for federated experiments.
 # Note: data-agnostic attack setting — no training-time label flipping is performed.
 
 import torch
@@ -22,7 +21,7 @@ LABEL_SCITECH = 3
 TARGET_LABEL = LABEL_SPORTS  # Attack target: Business -> Sports
 
 class NewsDataset(Dataset):
-    """Custom Dataset for AG News classification"""
+    """Custom Dataset for text classification (AG News, IMDB, DBpedia, etc.)"""
 
     def __init__(self, texts, labels, tokenizer, max_length=128,
                 include_target_mask: bool = False):
@@ -60,26 +59,27 @@ class NewsDataset(Dataset):
 
 
 class DataManager:
-    """Manages AG News data distribution (data-agnostic attack setting)"""
+    """Manages text classification data distribution (AG News, IMDB, DBpedia) for federated experiments (data-agnostic attack setting)"""
 
     def __init__(self, num_clients, num_attackers, test_seed,
                  dataset_size_limit=None, batch_size=None, test_batch_size=None,
-                 model_name: str = "distilbert-base-uncased", max_length: int = 128):
+                 model_name: str = "distilbert-base-uncased", max_length: int = 128,
+                 dataset: str = "ag_news"):
         
         """
-        Initialize DataManager for AG News dataset.
+        Initialize DataManager.
         
         Args:
             num_clients: Number of federated learning clients (required)
             num_attackers: Number of attacker clients (required)
             test_seed: Random seed for test sampling (required)
-            dataset_size_limit: Limit dataset size for faster experimentation (None = use full dataset, per paper)
-                                If set to positive int, limits training samples to this number.
-                                WARNING: Using limit may affect reproducibility. For paper reproduction, use None.
-            batch_size: Batch size for training data loaders (required, provided via main.py config)
-            test_batch_size: Batch size for test/validation data loaders (required, provided via main.py config)
+            dataset_size_limit: Limit dataset size (None = full dataset). For paper reproduction, use None.
+                               When set, only limits training set; test set remains full for fair evaluation.
+            batch_size: Batch size for training data loaders (required)
+            test_batch_size: Batch size for test/validation data loaders (required)
             model_name: Hugging Face model name for tokenizer initialization
-            max_length: Max token length for tokenizer (AG News: 128, IMDB: 256-512)
+            max_length: Max token length (AG News: 128, IMDB: 256-512, DBpedia: 512)
+            dataset: 'ag_news' | 'imdb' | 'dbpedia' (IMDB: stanfordnlp/imdb, DBpedia: fancyzhx/dbpedia_14)
         """
 
         if batch_size is None or test_batch_size is None:
@@ -87,48 +87,138 @@ class DataManager:
 
         self.num_clients = num_clients
         self.num_attackers = num_attackers
-        self.test_seed = test_seed  # Seed for random testing
-        self.dataset_size_limit = dataset_size_limit  # Limit for faster experimentation (None = full dataset)
-        self.batch_size = batch_size  # Batch size for training data loaders
-        self.test_batch_size = test_batch_size  # Batch size for test data loaders
-        self.max_length = max_length  # Max token length for tokenizer
-        self.model_name = model_name  # Store model name for reference
+        self.test_seed = test_seed
+        self.dataset_size_limit = dataset_size_limit
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+        self.max_length = max_length
+        self.model_name = model_name
+        self.dataset = dataset.lower()
         
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         # Handle padding for decoder-only models (GPT-style)
-        # These models (GPT2, Pythia, OPT, LLaMA, etc.) don't have a pad_token by default
-        # We set pad_token = eos_token to enable batch processing
         if self.tokenizer.pad_token is None:
             if self.tokenizer.eos_token is not None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
                 print(f"  📝 Set pad_token = eos_token ('{self.tokenizer.eos_token}') for {model_name}")
             else:
-                # Fallback: add a new pad token
                 self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
                 print(f"  📝 Added new pad_token '[PAD]' for {model_name}")
 
-        print("Loading AG News dataset...")
+        if self.dataset == "imdb":
+            print("Loading IMDB dataset (stanfordnlp/imdb)...")
+        elif self.dataset == "dbpedia":
+            print("Loading DBpedia dataset (fancyzhx/dbpedia_14)...")
+        else:
+            print("Loading AG News dataset...")
         self._load_data()
 
     def _load_data(self):
+        """Dispatch to dataset-specific loader."""
+        if self.dataset == "imdb":
+            self._load_imdb()
+        elif self.dataset == "dbpedia":
+            self._load_dbpedia()
+        else:
+            self._load_ag_news()
+
+    def _load_imdb(self):
+        """Load IMDB dataset from Hugging Face (stanfordnlp/imdb)."""
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            raise ImportError("IMDB requires datasets library. Install: pip install datasets")
+
+        ds = load_dataset("stanfordnlp/imdb")
+        train_data = ds["train"]
+        test_data = ds["test"]
+
+        self.train_texts = [str(x) for x in train_data["text"]]
+        self.train_labels = list(train_data["label"])
+        self.test_texts = [str(x) for x in test_data["text"]]
+        self.test_labels = list(test_data["label"])
+
+        print(f"  📊 Full IMDB Dataset: Train={len(self.train_texts)}, Test={len(self.test_texts)}")
+
+        if self.dataset_size_limit is not None and self.dataset_size_limit > 0:
+            rng = np.random.default_rng(42)
+            n_train = min(self.dataset_size_limit, len(self.train_texts))
+            n_test = min(int(self.dataset_size_limit * 0.15), len(self.test_texts))
+            idx_train = rng.choice(len(self.train_texts), n_train, replace=False)
+            idx_test = rng.choice(len(self.test_texts), n_test, replace=False)
+            self.train_texts = [self.train_texts[i] for i in idx_train]
+            self.train_labels = [self.train_labels[i] for i in idx_train]
+            self.test_texts = [self.test_texts[i] for i in idx_test]
+            self.test_labels = [self.test_labels[i] for i in idx_test]
+            print(f"  ⚠️  Using limited size: Train={len(self.train_texts)}, Test={len(self.test_texts)} (test = train_limit × 0.15)")
+
+        print(f"  ✅ IMDB ready! Train: {len(self.train_texts)}, Test: {len(self.test_texts)}")
+
+    def _load_dbpedia(self):
+        """Load DBpedia 14 dataset from Hugging Face (fancyzhx/dbpedia_14)."""
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            raise ImportError("DBpedia requires datasets library. Install: pip install datasets")
+
+        ds = load_dataset("fancyzhx/dbpedia_14")
+        train_data = ds["train"]
+        test_data = ds["test"]
+
+        # DBpedia has 'title' and 'content' fields; combine them like AG News
+        train_texts_combined = [f"{str(title)} {str(content)}" for title, content in zip(train_data["title"], train_data["content"])]
+        test_texts_combined = [f"{str(title)} {str(content)}" for title, content in zip(test_data["title"], test_data["content"])]
+
+        self.train_texts = train_texts_combined
+        self.train_labels = list(train_data["label"])
+        self.test_texts = test_texts_combined
+        self.test_labels = list(test_data["label"])
+
+        print(f"  📊 Full DBpedia Dataset: Train={len(self.train_texts)}, Test={len(self.test_texts)}")
+
+        if self.dataset_size_limit is not None and self.dataset_size_limit > 0:
+            rng = np.random.default_rng(42)
+            n_train = min(self.dataset_size_limit, len(self.train_texts))
+            n_test = min(int(self.dataset_size_limit * 0.15), len(self.test_texts))
+            idx_train = rng.choice(len(self.train_texts), n_train, replace=False)
+            idx_test = rng.choice(len(self.test_texts), n_test, replace=False)
+            self.train_texts = [self.train_texts[i] for i in idx_train]
+            self.train_labels = [self.train_labels[i] for i in idx_train]
+            self.test_texts = [self.test_texts[i] for i in idx_test]
+            self.test_labels = [self.test_labels[i] for i in idx_test]
+            print(f"  ⚠️  Using limited size: Train={len(self.train_texts)}, Test={len(self.test_texts)} (test = train_limit × 0.15)")
+
+        print(f"  ✅ DBpedia ready! Train: {len(self.train_texts)}, Test: {len(self.test_texts)}")
+
+    def _load_ag_news(self):
         """
         [OPTIMIZED] Robust data loading with local cache priority.
-        1. Check local .csv files.
-        2. If not found, download from GitHub.
-        3. Strict failure if download fails (No synthetic data).
+        1. Check AG_News_Datasets/ directory first (if exists).
+        2. Check root directory for train.csv/test.csv.
+        3. If not found, download from GitHub.
+        4. Strict failure if download fails (No synthetic data).
         """
+        # Priority 1: Check AG_News_Datasets/ directory
+        train_file_alt = 'AG_News_Datasets/train.csv'
+        test_file_alt = 'AG_News_Datasets/test.csv'
+        # Priority 2: Check root directory
         train_file = 'train.csv'
         test_file = 'test.csv'
         
-        # URLs
+        # URLs (verified: mhjabreel/CharCnn_Keras is a reliable source)
         train_url = "https://raw.githubusercontent.com/mhjabreel/CharCnn_Keras/master/data/ag_news_csv/train.csv"
         test_url = "https://raw.githubusercontent.com/mhjabreel/CharCnn_Keras/master/data/ag_news_csv/test.csv"
 
         try:
-            # 1. Try Local Load
-            if os.path.exists(train_file) and os.path.exists(test_file):
+            # 1. Try Local Load (Priority 1: AG_News_Datasets/ directory)
+            if os.path.exists(train_file_alt) and os.path.exists(test_file_alt):
+                print(f"  ✅ Found local data files in AG_News_Datasets/ directory. Loading...")
+                train_df = pd.read_csv(train_file_alt, header=None, names=['label', 'title', 'text'])
+                test_df = pd.read_csv(test_file_alt, header=None, names=['label', 'title', 'text'])
+            # Priority 2: Check root directory
+            elif os.path.exists(train_file) and os.path.exists(test_file):
                 print(f"  ✅ Found local data files ({train_file}, {test_file}). Loading...")
                 train_df = pd.read_csv(train_file, header=None, names=['label', 'title', 'text'])
                 test_df = pd.read_csv(test_file, header=None, names=['label', 'title', 'text'])
@@ -136,11 +226,12 @@ class DataManager:
             # 2. Try Download
             else:
                 print("  🌐 Local data not found. Downloading from GitHub...")
+                print(f"     Source: {train_url}")
                 
                 # Train Data
                 with urllib.request.urlopen(train_url, timeout=20) as response:
                     data = response.read().decode('utf-8')
-                    # Save to local for next time
+                    # Save to root directory for next time
                     with open(train_file, 'w', encoding='utf-8') as f:
                         f.write(data)
                     train_df = pd.read_csv(io.StringIO(data), header=None, names=['label', 'title', 'text'])

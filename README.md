@@ -14,9 +14,26 @@
 └── visualization.py          # Visualization module: generates Figure
 ```
 
-## Dataset
+## Supported Models
 
-The datasets can be downloaded in the following link:
+Encoder-only (BERT-style): `distilbert-base-uncased`, `bert-base-uncased`, `roberta-base`, `microsoft/deberta-v3-base`  
+Decoder-only (GPT-style): `gpt2`, `EleutherAI/pythia-160m`, `EleutherAI/pythia-1b`, `facebook/opt-125m`, `Qwen/Qwen2.5-0.5B`
+
+Configure in `main.py` via `model_name`. Use base models (not Instruct) for classification fine-tuning.
+
+## Supported Datasets
+
+- **AG News**: `dataset='ag_news'`, `num_labels=4`, `max_length=128` (default)
+- **IMDB** (stanfordnlp/imdb): `dataset='imdb'`, `num_labels=2`, `max_length=512` (or 256 for lower memory)
+- **DBpedia 14** (fancyzhx/dbpedia_14): `dataset='dbpedia'`, `num_labels=14`, `max_length=512` (14 topic classes, 560K train / 70K test)
+
+Configure in `main.py` via `dataset`, `num_labels`, and `max_length`.
+
+**Note on dataset_size_limit**: When `dataset_size_limit` is set, both train and test are limited for faster experimentation: train uses up to `dataset_size_limit` samples, test uses up to `dataset_size_limit × 0.15` samples (same rule for AG News, IMDB, and DBpedia).
+
+## Dataset Download (AG News)
+
+AG News is loaded from local CSV or downloaded automatically. Manual links:
 ```python
 url = "https://www.kaggle.com/datasets/amananandrai/ag-news-classification-dataset"
 train_url = "https://raw.githubusercontent.com/mhjabreel/CharCnn_Keras/master/data/ag_news_csv/train.csv"

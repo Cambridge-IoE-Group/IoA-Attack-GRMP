@@ -40,8 +40,7 @@ def setup_experiment(config):
     print("=" * 50)
 
     # 1. Initialize Data Manager
-    # Note: dataset_size_limit=None uses FULL AG News dataset (~120K train, ~7.6K test) per paper
-    # Set dataset_size_limit to a positive int (e.g., 30000) only for faster experimentation
+    # dataset: 'ag_news' | 'imdb' | 'dbpedia' — select dataset; num_labels and max_length must match (see config below)
     data_manager = DataManager(
         num_clients=config['num_clients'],
         num_attackers=config['num_attackers'],
@@ -50,7 +49,8 @@ def setup_experiment(config):
         batch_size=config['batch_size'],
         test_batch_size=config['test_batch_size'],
         model_name=config.get('model_name', 'distilbert-base-uncased'),
-        max_length=config.get('max_length', 128)
+        max_length=config.get('max_length', 128),
+        dataset=config.get('dataset', 'ag_news')
     )
 
     # 2. Partition data among clients
@@ -58,7 +58,7 @@ def setup_experiment(config):
     data_distribution = config.get('data_distribution', 'non-iid').lower()
     indices = np.arange(len(data_manager.train_texts))
     labels = np.array(data_manager.train_labels)
-    num_labels = 4
+    num_labels = config.get('num_labels', 4)
     num_clients = config['num_clients']
     num_attackers = config.get('num_attackers', 0)
     num_benign = num_clients - num_attackers
@@ -191,8 +191,9 @@ def setup_experiment(config):
         dist_bound=config.get('dist_bound', config.get('d_T', 0.5)),  # Renamed from d_T
         similarity_mode=config.get('server_similarity_mode', 'local_vs_global')
     )
-    # Set sim_center from config (cosine similarity center, optional)
-    server.sim_center = config.get('sim_center', config.get('sim_T', None))
+    # Manual cosine similarity bounds (None = use benign min/max)
+    server.sim_bound_low = config.get('sim_bound_low', None)
+    server.sim_bound_up = config.get('sim_bound_up', None)
 
     # 6. Create Clients
     print("\nCreating federated learning clients...")
@@ -362,6 +363,7 @@ def setup_experiment(config):
                     lambda_dist_init=config.get('lambda_dist_init', config.get('lambda_init', 0.1)),
                     lambda_dist_lr=config.get('lambda_dist_lr', config.get('lambda_lr', 0.01)),
                     use_cosine_similarity_constraint=config.get('use_cosine_similarity_constraint', False),
+                    use_pairwise_similarity_in_constraint=config.get('use_pairwise_similarity_in_constraint', False),
                     lambda_sim_low_init=config.get('lambda_sim_low_init', config.get('lambda_sim_init', 0.1)),
                     lambda_sim_up_init=config.get('lambda_sim_up_init', config.get('lambda_sim_init', 0.1)),
                     lambda_sim_low_lr=config.get('lambda_sim_low_lr', config.get('lambda_sim_lr', 0.01)),
@@ -450,28 +452,23 @@ def run_experiment(config):
                             config['experiment_name'], results_dir)
     
     # Generate visualizations
-    if config.get('generate_plots', True):
-        print("\n" + "=" * 60)
-        print("Generating Visualization Plots")
-        print("=" * 60)
-        
-        visualizer = ExperimentVisualizer(results_dir=results_dir)
-        
-        # Extract attacker IDs
-        attacker_ids = [client.client_id for client in server.clients 
-                       if getattr(client, 'is_attacker', False)]
-        
-        # Generate all figures
-        visualizer.generate_all_figures(
-            server_log_data=server.log_data,
-            local_accuracies=server.history['local_accuracies'],
-            attacker_ids=attacker_ids,
-            experiment_name=config['experiment_name'],
-            num_rounds=config['num_rounds'],
-            attack_start_round=config['attack_start_round'],
-            num_clients=config['num_clients'],
-            num_attackers=config['num_attackers']
-        )
+    print("\n" + "=" * 60)
+    print("Generating Visualization Plots")
+    print("=" * 60)
+    
+    visualizer = ExperimentVisualizer(results_dir=results_dir)
+    
+    # Generate all figures
+    visualizer.generate_all_figures(
+        server_log_data=server.log_data,
+        local_accuracies=server.history['local_accuracies'],
+        attacker_ids=attacker_ids,
+        experiment_name=config['experiment_name'],
+        num_rounds=config['num_rounds'],
+        attack_start_round=config['attack_start_round'],
+        num_clients=config['num_clients'],
+        num_attackers=config['num_attackers']
+    )
     
     return server.log_data, progressive_metrics
 
@@ -782,17 +779,33 @@ def main():
         'client_lr': 5e-5,  # Learning rate for local client training (float)
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
-        'test_batch_size': 256,  # Batch size for test/validation data loaders (int)
+        'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
         'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
-        'grad_clip_norm': 1.0,  # Benign client local training (classification model). For Pythia-160m try 0.5 if nan
+        'grad_clip_norm': 1.0,  # Benign client grad clipping. Decoder models: Pythia-160m try 0.5 if nan; Qwen2.5-0.5B typically stable at 1.0
         'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
+        
+        # ========== Dataset Configuration ==========
+        # Choose dataset: 'ag_news' | 'imdb' | 'dbpedia' — set num_labels and max_length accordingly
+        # Dataset 1: AG News
+        # 'dataset': 'ag_news',  # 'ag_news': news classification (4 classes) | 'imdb': sentiment (2 classes) | 'dbpedia': topic classification (14 classes)
+        # 'num_labels': 4,       # AG News: 4 | IMDB: 2 | DBpedia: 14
+        # 'max_length': 128,     # AG News: 128 (avg ~50 tokens) | IMDB: 512 or 256 (avg ~230 tokens) | DBpedia: 512 (50-3940 chars)
+        # -------------------------------------------
+        # Dataset 2: IMDB
+        # 'dataset': 'imdb',   # Uncomment for IMDB; then set num_labels=2, max_length=512 (or 256 for lower memory)
+        # 'num_labels': 2,
+        # 'max_length': 512,
+        # -------------------------------------------
+        # Dataset 3: DBpedia (14 classes, 560K train / 70K test)
+        'dataset': 'dbpedia',   # DBpedia 14: topic classification (14 classes, fancyzhx/dbpedia_14)
+        'num_labels': 14,       # DBpedia: 14 classes
+        'max_length': 512,      # DBpedia: 512 (text length ranges from 50 to 3940 characters)
         
         # ========== Data Distribution ==========
         'data_distribution': 'non-iid',  # 'iid' for uniform random, 'non-iid' for Dirichlet-based heterogeneous distribution
         'dirichlet_alpha': 0.3,  # Only used when data_distribution='non-iid'. Lower = more heterogeneous, higher = more balanced
-        # 'dataset_size_limit': None,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        'dataset_size_limit': 20000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
-        # 'dataset_size_limit': 10000,  # Limit dataset size for faster experimentation (None = use FULL AG News dataset per paper, int = limit training samples)
+        # 'dataset_size_limit': None,  # Limit dataset size (None = full dataset). AG News: ~120K train; IMDB: 25K train; DBpedia: 560K train
+        'dataset_size_limit': 20000,  # Limit for faster experimentation (None = full dataset). When set, only limits training set; test set remains full for fair evaluation
 
         # ========== Training Mode Configuration ==========
         'use_lora': True,  # True for LoRA fine-tuning, False for full fine-tuning
@@ -807,14 +820,14 @@ def main():
         # Model configuration
         # Supported models:
         # Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
-        # 'model_name': 'distilbert-base-uncased',  # distilbert 67M
-
-        # Decoder-only (GPT-style):  'gpt2' (recommended baseline), 'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m'
-        # 'model_name': 'gpt2',                      # GPT-2 124M — most stable decoder baseline (OpenAI, widely used)
-        'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (GPT-NeoX arch, 160M params)
-        # 'model_name': 'facebook/opt-125m',         # OPT-125M (Meta, 125M params)
-        'num_labels': 4,  # Number of classification labels (AG News: 4, IMDB: 2)
-        'max_length': 128,  # Max token length for tokenizer. AG News: 128 (avg ~50 tokens), IMDB: 256-512 (avg ~230 tokens)
+        'model_name': 'distilbert-base-uncased',  # distilbert 67M
+        # # -------------------------------------------
+        # Decoder-only (GPT-style): 'gpt2', 'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m', 'Qwen/Qwen2.5-0.5B'
+        # 'model_name': 'gpt2',                      # GPT-2 124M — stable decoder baseline
+        # 'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (may need grad_clip_norm=0.5)
+        # 'model_name': 'facebook/opt-125m',         # OPT-125M (Meta)
+        # 'model_name': 'Qwen/Qwen2.5-0.5B',  # Qwen2.5-0.5B ~494M (Alibaba, LLaMA-style arch, Apache 2.0) — use BASE for fine-tuning
+        # num_labels and max_length: set above in Dataset Configuration based on chosen dataset
         
 
         # ========== Attack Configuration ==========
@@ -846,16 +859,17 @@ def main():
 
         # ========== GRMP Attack Optimization Parameters ==========
         'proxy_step': 0.001,  # Step size for gradient-free ascent toward global-loss proxy
-        'proxy_steps': 100,  # Number of optimization steps for attack objective (int)
+        'proxy_steps': 150,  # Number of optimization steps for attack objective (int)
         'attacker_proxy_grad_clip_norm': 1.0,  # GRMP attacker proxy parameter update only; separate from benign training
         'attacker_claimed_data_size': None,  # None = use actual assigned data size
         'early_stop_constraint_stability_steps': 1,  # Early stopping: stop after N consecutive steps satisfying constraint (int)
 
         # ========== Formula 4 Constraint Parameters ==========
         'dist_bound': None,  # Distance threshold for constraint (4b): d(w'_j(t), w'_g(t)) ≤ dist_bound (None = use benign max distance)
-        'sim_center': None,  # Optional center for similarity bounds (None = use benign min/max)
+        'sim_bound_low': 0.0,  # Manual lower bound for cosine similarity (None = use benign min). e.g. 0.0 to require non-negative similarity
+        'sim_bound_up': None,   # Manual upper bound for cosine similarity (None = use benign mean-std over benign clients)
         # Server cosine similarity mode: 'local_vs_global' (each client vs Δ_g) | 'pairwise' (local vs local, report mean to others) | 'both'
-        'server_similarity_mode': 'pairwise',  # Use pairwise to avoid self-comparison; set to 'local_vs_global' to match attack constraint definition
+        'server_similarity_mode': 'pairwise',  # Use 'pairwise' to avoid self-comparison; set to 'local_vs_global' to match attack constraint definition
 
         # ========== Lagrangian Dual Parameters ==========
         'use_lagrangian_dual': True,  # Whether to use Lagrangian Dual mechanism (bool, True/False)
@@ -864,16 +878,17 @@ def main():
         'lambda_dist_lr': 0.01,    # Learning rate for λ_dist(t) update (dual ascent step size)
         
         # ========== Cosine Similarity Constraint Parameters (TWO-SIDED with TWO multipliers) False by default ==========
-        'use_cosine_similarity_constraint': False,  # Whether to enable cosine similarity constraints (bool, True/False) False by default!
+        'use_cosine_similarity_constraint': True,  # Whether to enable cosine similarity constraints (bool, True/False) False by default! open both to use pairwise sim
+        'use_pairwise_similarity_in_constraint': True,  # When True and similarity constraint on: use pairwise sim (align with server_similarity_mode='pairwise') open both to use pairwise sim
         'lambda_sim_low_init': 0.1,  # Initial λ_sim_low(t) value for lower bound constraint: sim_bound_low <= sim_att
         'lambda_sim_up_init': 0.1,   # Initial λ_sim_up(t) value for upper bound constraint: sim_att <= sim_bound_up
-        'lambda_sim_low_lr': 0.1,    # Learning rate for λ_sim_low(t) update
-        'lambda_sim_up_lr': 0.1,     # Learning rate for λ_sim_up(t) update
+        'lambda_sim_low_lr': 0.01,    # Learning rate for λ_sim_low(t) update
+        'lambda_sim_up_lr': 0.01,     # Learning rate for λ_sim_up(t) update
 
         # ========== Augmented Lagrangian Method (ALM) Parameters ==========
         # Standard ALM adds quadratic penalties: (ρ/2) * g(x)^2 for each inequality constraint g(x) ≤ 0.
         'use_augmented_lagrangian': True,   # Enable Augmented Lagrangian (requires use_lagrangian_dual=True)
-        'lambda_update_mode': 'classic',    # Dual variable update: "classic"=λ += lr*g (fixed step), "alm"=λ += ρ*g (penalty-scaled step, standard ALM)
+        'lambda_update_mode': 'alm',    # Dual variable update: "classic"=λ += lr*g (fixed step), "alm"=λ += ρ*g (penalty-scaled step, standard ALM)
         # Penalty parameters ρ (per-constraint): controls quadratic penalty strength (ρ/2)*max(0,g)^2 in ALM objective
         'rho_dist_init': 1.0,
         'rho_sim_low_init': 1.0,
@@ -882,7 +897,7 @@ def main():
         'rho_adaptive': True,
         'rho_theta': 0.5,            # If σ_k > theta * σ_{k-1} then increase ρ
         'rho_increase_factor': 2.0,
-        'rho_min': 1e-3,
+        'rho_min': 1e-4,
         'rho_max': 1e4,
         
         # ========== Proxy Loss Estimation Parameters ==========
@@ -892,9 +907,7 @@ def main():
         'proxy_max_batches_opt': 1,  # Max batches per _proxy_global_loss call in optimization loop (int)
                                 # Only has effect when proxy set has >1 batch (proxy_sample_size > test_batch_size).
         'proxy_max_batches_eval': 1,  # Max batches per _proxy_global_loss call in final evaluation (int)
-        
-        # ========== Visualization ==========
-        'generate_plots': True,  # Whether to generate visualization plots (bool)
+
     }
 
     # Run experiment (attack if num_attackers > 0, baseline if num_attackers == 0)
