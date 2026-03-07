@@ -779,8 +779,8 @@ def main():
         'seed': 42,  # Random seed for reproducibility (int), 42 is the default
         
         # ========== Federated Learning Setup ==========
-        'num_clients': 5,  # Total number of federated learning clients (int)
-        'num_attackers': 0,  # Number of attacker clients (int, must be < num_clients)
+        'num_clients': 7,  # Total number of federated learning clients (int)
+        'num_attackers': 2,  # Number of attacker clients (int, must be < num_clients)
         'num_benign_clients': None,  # Optional: Explicit number of benign clients for baseline experiment
                                     # If None, baseline will use (num_clients - num_attackers) to ensure fair comparison
                                     # If set, baseline experiment will use exactly this many benign clients
@@ -791,16 +791,16 @@ def main():
         'server_lr': 1.0,  # Server learning rate for model aggregation (fixed at 1.0)
         'batch_size': 128,  # Batch size for local training (int)
         'test_batch_size': 512,  # Batch size for test/validation data loaders (int)
-        'local_epochs': 2,  # Number of local training epochs per round (int, per paper Section IV)
+        'local_epochs': 5,  # Number of local training epochs per round (int, per paper Section IV)
         'grad_clip_norm': 1.0,  # Benign client grad clipping. Decoder models: Pythia-160m try 0.5 if nan; Qwen2.5-0.5B typically stable at 1.0
         'alpha': 0.0,  # FedProx proximal coefficient μ: loss += (μ/2)*||w - w_global||². Set 0 for standard FedAvg, >0 to penalize local drift from global model (helps Non-IID stability)
         
         # ========== Dataset Configuration ==========
         # Choose dataset: 'ag_news' | 'imdb' | 'dbpedia' | 'yahoo_answers' — set num_labels and max_length accordingly
         # Dataset 1: AG News
-        'dataset': 'ag_news',  # news classification (4 classes)
-        'num_labels': 4,       # AG News: 4 | IMDB: 2 | DBpedia: 14 | Yahoo Answers: 10
-        'max_length': 128,     # AG News: 128 | IMDB: 512/256 | DBpedia: 512 | Yahoo Answers: 256
+        # 'dataset': 'ag_news',  # news classification (4 classes)
+        # 'num_labels': 4,       # AG News: 4 | IMDB: 2 | DBpedia: 14 | Yahoo Answers: 10
+        # 'max_length': 128,     # AG News: 128 | IMDB: 512/256 | DBpedia: 512 | Yahoo Answers: 256
         # -------------------------------------------
         # Dataset 2: IMDB
         # 'dataset': 'imdb',   # sentiment (2 classes)
@@ -813,9 +813,9 @@ def main():
         # 'max_length': 512,
         # -------------------------------------------
         # Dataset 4: Yahoo Answers (10 classes, 1.4M train / 60K test)
-        # 'dataset': 'yahoo_answers',   # topic classification (10 classes, yassiracharki/Yahoo_Answers_10_categories_for_NLP)
-        # 'num_labels': 10,       # Yahoo Answers: 10 classes
-        # 'max_length': 128,      # Yahoo Answers: 256 (Q&A text, similar length to AG News)
+        'dataset': 'yahoo_answers',   # topic classification (10 classes, yassiracharki/Yahoo_Answers_10_categories_for_NLP)
+        'num_labels': 10,       # Yahoo Answers: 10 classes
+        'max_length': 128,      # Yahoo Answers: 256 (Q&A text, similar length to AG News)
         
         # ========== Data Distribution ==========
         'data_distribution': 'non-iid',  # 'iid' for uniform random, 'non-iid' for Dirichlet-based heterogeneous distribution
@@ -828,19 +828,19 @@ def main():
         # LoRA parameters (only used when use_lora=True)
         # NOTE: Lower r values = faster training but potentially less capacity
         # Recommended: r=8 for speed, r=16 for better performance (default)
-        'lora_r': 8,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
-        'lora_alpha': 16,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
+        'lora_r': 16,  # LoRA rank (controls the rank of low-rank matrices) - REDUCED from 16 to 8 for speed
+        'lora_alpha': 32,  # LoRA alpha (scaling factor, typically 2*r) - UPDATED to match r=8
         'lora_dropout': 0.1,  # LoRA dropout rate
         'lora_target_modules': None,  # None = use default for DistilBERT (["q_lin", "k_lin", "v_lin", "out_lin"])
         
         # Model configuration
         # Supported models:
         # Encoder-only (BERT-style): 'distilbert-base-uncased', 'bert-base-uncased', 'roberta-base', 'microsoft/deberta-v3-base'
-        # 'model_name': 'distilbert-base-uncased',  # distilbert 67M
+        'model_name': 'distilbert-base-uncased',  # distilbert 67M
         # # -------------------------------------------
         # Decoder-only (GPT-style): 'gpt2', 'EleutherAI/pythia-160m', 'EleutherAI/pythia-1b', 'facebook/opt-125m', 'Qwen/Qwen2.5-0.5B'
         # 'model_name': 'gpt2',                      # GPT-2 124M — stable decoder baseline
-        'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (may need grad_clip_norm=0.5)
+        # 'model_name': 'EleutherAI/pythia-160m',    # Pythia-160M (may need grad_clip_norm=0.5)
         # 'model_name': 'facebook/opt-125m',         # OPT-125M (Meta)
         # 'model_name': 'Qwen/Qwen2.5-0.5B',  # Qwen2.5-0.5B ~494M (Alibaba, LLaMA-style arch, Apache 2.0) — use BASE for fine-tuning
         # num_labels and max_length: set above in Dataset Configuration based on chosen dataset
@@ -918,7 +918,7 @@ def main():
         
         # ========== Proxy Loss Estimation Parameters ==========
         'attacker_use_proxy_data': True,  # If True, GRMP attacker uses proxy set to estimate F(w'_g); if False, no data access (constraint-only optimization)
-        'proxy_sample_size': 200,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
+        'proxy_sample_size': 512,  # Number of samples in proxy dataset for F(w'_g) estimation (int)
                                 # Increased from 128 to 512 for better accuracy (4 batches with test_batch_size=128)
         'proxy_max_batches_opt': 1,  # Max batches per _proxy_global_loss call in optimization loop (int)
                                 # Only has effect when proxy set has >1 batch (proxy_sample_size > test_batch_size).
